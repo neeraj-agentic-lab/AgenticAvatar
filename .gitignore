@@ -1,0 +1,27 @@
+# Env
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Generated proto
+services/gateway/avatar_pb2*.py
+services/avatar-worker/avatar_pb2*.py
+
+# Models (weights)
+models/*/
+!models/*.md
+
+# OS
+.DS_Store

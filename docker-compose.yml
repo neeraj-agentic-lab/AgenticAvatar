@@ -1,0 +1,80 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"   # 6380 on host to avoid conflicts with other projects
+    volumes:
+      - agenticavatar-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # LiveKit pulled separately — see scripts/pull-images.sh if Docker Hub is blocked
+  livekit:
+    image: livekit/livekit-server:v1.7.2
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    command: --config /etc/livekit/config.yaml
+    volumes:
+      - ./infra/livekit-dev.yaml:/etc/livekit/config.yaml
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - AVATAR_WORKER_TARGET=avatar-worker:50051
+      - LIVEKIT_URL=ws://livekit:7880
+    volumes:
+      - ./services/gateway:/app
+      - ./models:/models
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  avatar-worker:
+    build:
+      context: .
+      dockerfile: services/avatar-worker/Dockerfile
+    ports:
+      - "50051:50051"
+    env_file:
+      - .env
+    environment:
+      - MOCK_MODE=true
+    volumes:
+      - ./models:/models    # source mounts removed — stubs generated inside image
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - NEXT_PUBLIC_GATEWAY_URL=ws://localhost:8000
+      - NEXT_PUBLIC_LIVEKIT_URL=ws://localhost:7880
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - gateway
+
+volumes:
+  agenticavatar-redis-data:    # named volume scoped to this project only

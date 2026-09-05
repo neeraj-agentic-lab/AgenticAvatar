@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x /Users/nyadav/personal/development/AgenticAvatar/scripts/gen-proto.sh)",
+      "Bash(bash scripts/start-dev.sh)",
+      "Bash(bash -x scripts/start-dev.sh)"
+    ]
+  }
+}

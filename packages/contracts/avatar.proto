@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package avatar;
+
+service AvatarRenderer {
+  rpc OpenSession(OpenSessionRequest) returns (OpenSessionResponse);
+  rpc Stream(stream RenderInput) returns (stream RenderOutput);
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+}
+
+message OpenSessionRequest {
+  string session_id = 1;
+  string avatar_id = 2;
+}
+
+message OpenSessionResponse {
+  string session_id = 1;
+  bool ready = 2;
+}
+
+message ControlEvent {
+  enum Type {
+    INTERRUPT = 0;
+    IDLE = 1;
+  }
+  Type type = 1;
+}
+
+message RenderInput {
+  string session_id = 1;
+  string turn_id = 2;
+  uint64 generation = 3;
+  uint64 timestamp_ms = 4;
+  oneof input {
+    bytes pcm_s16le = 5;
+    ControlEvent control = 6;
+  }
+}
+
+message RenderOutput {
+  string session_id = 1;
+  string turn_id = 2;
+  uint64 generation = 3;
+  uint64 presentation_timestamp_ms = 4;
+  bytes encoded_frame = 5;
+  bool keyframe = 6;
+}
+
+message CloseSessionRequest {
+  string session_id = 1;
+}
+
+message CloseSessionResponse {
+  bool ok = 1;
+}
