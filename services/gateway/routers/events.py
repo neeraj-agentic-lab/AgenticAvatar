@@ -38,19 +38,29 @@ async def session_events(websocket: WebSocket, session_id: str):
 
     # LiveKit publisher — connects as server-side participant to publish avatar video
     publisher = LiveKitPublisher(session_id)
+    publisher_ready = False
     try:
         await publisher.connect()
+        publisher_ready = True
+        import logging
+        logging.getLogger(__name__).info("LiveKit publisher ready for session %s", session_id)
     except Exception as e:
         import logging
-        logging.getLogger(__name__).warning("LiveKit publisher unavailable: %s", e)
+        logging.getLogger(__name__).warning("LiveKit publisher unavailable (video disabled): %s", e)
 
     async def ensure_agent_session():
         nonlocal agent_session_started
         if not agent_session_started:
             agent_session_started = True
             await conversation.start_session(session_id)
-            await avatar.connect()
-            await avatar.open_session(session_id)
+            try:
+                await avatar.connect()
+                await avatar.open_session(session_id)
+                import logging
+                logging.getLogger(__name__).info("Avatar worker connected for session %s", session_id)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error("Avatar worker connection failed: %s", e)
 
     async def send_event(payload: dict) -> None:
         try:
@@ -85,7 +95,8 @@ async def session_events(websocket: WebSocket, session_id: str):
             audio_chunks=pcm_source(),
             current_generation=current_generation,
         ):
-            await publisher.push_frame(frame.encoded_frame, frame.presentation_timestamp_ms)
+            if publisher_ready:
+                await publisher.push_frame(frame.encoded_frame, frame.presentation_timestamp_ms)
 
     def cancel_active_turn() -> None:
         nonlocal active_turn, avatar_stream_task
@@ -238,4 +249,7 @@ async def session_events(websocket: WebSocket, session_id: str):
             await conversation.end_session(session_id)
             await avatar.close_session(session_id)
         await tts.close()
-        await publisher.disconnect()
+        try:
+            await publisher.disconnect()
+        except Exception:
+            pass
