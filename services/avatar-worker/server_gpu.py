@@ -163,6 +163,9 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
                     out_video,
                 ),
             )
+            # Delete WAV only after ditto_run (and its internal ffmpeg) completes
+            Path(wav_path).unlink(missing_ok=True)
+            wav_path = None  # prevent double-delete in finally
 
             elapsed = time.time() - t0
             exists = Path(out_video).exists()
@@ -185,8 +188,8 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
         except Exception:
             log.exception("Inference failed")
         finally:
-            Path(wav_path).unlink(missing_ok=True)
-            # Remove output video but keep dir for next turn
+            if wav_path:
+                Path(wav_path).unlink(missing_ok=True)
             Path(out_video).unlink(missing_ok=True)
 
     async def CloseSession(self, request, context):

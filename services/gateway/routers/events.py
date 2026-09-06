@@ -45,14 +45,14 @@ async def session_events(websocket: WebSocket, session_id: str):
     async def _connect_publisher():
         nonlocal publisher_ready
         try:
-            await publisher.connect()
+            await asyncio.wait_for(publisher.connect(), timeout=10.0)
             publisher_ready = True
             _log.info("LiveKit publisher ready for session %s", session_id)
         except BaseException as e:
-            _log.warning("LiveKit publisher unavailable (video disabled): %s", e)
+            _log.warning("LiveKit publisher unavailable: %s", e)
 
-    t = asyncio.create_task(_connect_publisher())
-    t.add_done_callback(lambda f: f.exception() if not f.cancelled() and f.exception() else None)
+    # Fire-and-forget — must not propagate exceptions to the WebSocket handler
+    asyncio.ensure_future(_connect_publisher())
 
     async def ensure_agent_session():
         nonlocal agent_session_started
