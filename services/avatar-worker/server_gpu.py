@@ -68,12 +68,28 @@ def _frames_from_video(video_path: str):
 
 class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
     def __init__(self):
-        self._sdk = _load_ditto()
-        log.info("Portrait: %s", SOURCE_IMAGE)
+        self._sdk = None
+        self._loading = True
+        # Load Ditto in background thread so gRPC starts immediately
+        import threading
+        def _load():
+            try:
+                self._sdk = _load_ditto()
+                log.info("Portrait: %s", SOURCE_IMAGE)
+            except Exception:
+                log.exception("Failed to load Ditto")
+            finally:
+                self._loading = False
+        threading.Thread(target=_load, daemon=True).start()
 
     async def OpenSession(self, request, context):
-        log.info("OpenSession %s", request.session_id)
-        return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=True)
+        # Wait for Ditto to finish loading (max 300s)
+        for _ in range(300):
+            if not self._loading:
+                break
+            await asyncio.sleep(1)
+        log.info("OpenSession %s (sdk ready: %s)", request.session_id, self._sdk is not None)
+        return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=self._sdk is not None)
 
     async def Stream(self, request_iterator, context):
         pcm_buf     = bytearray()
@@ -107,6 +123,10 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
                 pcm_buf.extend(msg.pcm_s16le)
 
     async def _run_inference(self, pcm: bytes, session_id: str, turn_id: str, generation: int):
+        if self._sdk is None:
+            log.warning("Ditto not ready yet, skipping inference")
+            return
+
         wav_path = _pcm_to_wav(pcm)
         out_dir   = tempfile.mkdtemp()
         out_video = os.path.join(out_dir, "output.mp4")
