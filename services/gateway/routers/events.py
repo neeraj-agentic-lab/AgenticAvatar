@@ -7,6 +7,7 @@ from dependencies import get_conversation_adapter, get_tts_adapter, get_avatar_c
 from adapters.tts.base import TTSOptions
 from config import settings
 from conversation_loop import TurnContext, run_turn
+from livekit_publisher import LiveKitPublisher
 
 router = APIRouter()
 
@@ -35,6 +36,14 @@ async def session_events(websocket: WebSocket, session_id: str):
     # Send ready immediately — Agentforce session created lazily on first turn
     agent_session_started = False
 
+    # LiveKit publisher — connects as server-side participant to publish avatar video
+    publisher = LiveKitPublisher(session_id)
+    try:
+        await publisher.connect()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("LiveKit publisher unavailable: %s", e)
+
     async def ensure_agent_session():
         nonlocal agent_session_started
         if not agent_session_started:
@@ -61,8 +70,7 @@ async def session_events(websocket: WebSocket, session_id: str):
         return generation
 
     async def run_avatar_stream(turn_id: str, gen: int) -> None:
-        """Forward queued PCM to the avatar worker and discard frames for now.
-        LiveKit track publishing wired in the WebRTC phase."""
+        """Forward PCM to avatar worker, push returned frames to LiveKit."""
         async def pcm_source():
             while True:
                 chunk = await avatar_audio_queue.get()
@@ -77,8 +85,7 @@ async def session_events(websocket: WebSocket, session_id: str):
             audio_chunks=pcm_source(),
             current_generation=current_generation,
         ):
-            # TODO: publish frame to LiveKit video track
-            _ = frame
+            await publisher.push_frame(frame.encoded_frame, frame.presentation_timestamp_ms)
 
     def cancel_active_turn() -> None:
         nonlocal active_turn, avatar_stream_task
@@ -220,3 +227,4 @@ async def session_events(websocket: WebSocket, session_id: str):
             await conversation.end_session(session_id)
             await avatar.close_session(session_id)
         await tts.close()
+        await publisher.disconnect()

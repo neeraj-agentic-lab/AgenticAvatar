@@ -15,5 +15,6 @@ opentelemetry-api==1.27.0
 opentelemetry-sdk==1.27.0
 opentelemetry-instrumentation-fastapi==0.48b0
 livekit-api==1.2.1
+livekit-agents==1.8.0
 kokoro-onnx==0.6.1
 python-dotenv==1.0.1
