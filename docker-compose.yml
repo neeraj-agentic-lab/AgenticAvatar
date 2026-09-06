@@ -59,6 +59,7 @@ services:
       - ./models:/models
 
   # GPU avatar worker — Ditto real lip sync (GCP T4 only)
+  # Models are at /models/ditto on the GCP VM (not inside the repo)
   avatar-worker-gpu:
     build:
       context: .
@@ -69,11 +70,11 @@ services:
       - .env
     environment:
       - MOCK_MODE=false
-      - DITTO_CHECKPOINTS=/models/ditto/checkpoints
+      - DITTO_CHECKPOINTS=/models/ditto/checkpoints/ditto_trt_T4
       - DITTO_CFG=/models/ditto/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_t4.pkl
-      - AVATAR_SOURCE_IMAGE=/models/ditto/portrait.png
+      - AVATAR_SOURCE_IMAGE=/models/ditto/portrait.jpg
     volumes:
-      - ./models:/models
+      - /models:/models
     deploy:
       resources:
         reservations:
