@@ -1,0 +1,44 @@
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-devel
+
+WORKDIR /app
+
+# System dependencies
+RUN apt-get update && apt-get install -y \
+    git git-lfs \
+    ffmpeg \
+    libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps for Ditto
+RUN pip install --no-cache-dir \
+    tensorrt==8.6.1 \
+    numpy==2.0.1 \
+    librosa \
+    opencv-python-headless \
+    imageio imageio-ffmpeg \
+    scikit-image \
+    cython \
+    colored tqdm filetype \
+    grpcio==1.67.0 grpcio-tools==1.67.0 \
+    protobuf==5.29.6
+
+# Clone Ditto repo
+RUN git clone https://github.com/antgroup/ditto-talkinghead.git /ditto
+
+# Generate proto stubs
+COPY packages/contracts/avatar.proto /tmp/avatar.proto
+RUN mkdir -p /proto_gen && python -m grpc_tools.protoc \
+    -I /tmp \
+    --python_out=/proto_gen \
+    --grpc_python_out=/proto_gen \
+    /tmp/avatar.proto
+
+# Copy avatar worker server
+COPY services/avatar-worker/server_gpu.py /app/server.py
+
+ENV PYTHONPATH="/proto_gen:/ditto:${PYTHONPATH}"
+ENV MOCK_MODE=false
+
+EXPOSE 50051
+CMD ["python", "/app/server.py"]
