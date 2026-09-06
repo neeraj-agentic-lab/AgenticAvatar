@@ -38,12 +38,20 @@ SAMPLE_RATE  = 16000
 
 
 def _load_ditto():
-    log.info("Loading Ditto from %s ...", CHECKPOINTS)
+    """Import modules once — SDK must be created fresh per inference call."""
+    log.info("Importing Ditto modules from %s ...", CHECKPOINTS)
     from stream_pipeline_offline import StreamSDK
     from inference import run as ditto_run
+    # Warm up by creating one SDK instance to load TRT engines into GPU
     sdk = StreamSDK(CFG_PKL, CHECKPOINTS)
     log.info("Ditto ready.")
-    return sdk, ditto_run
+    return StreamSDK, ditto_run
+
+
+def _make_sdk():
+    """Create a fresh StreamSDK instance for each inference call."""
+    from stream_pipeline_offline import StreamSDK
+    return StreamSDK(CFG_PKL, CHECKPOINTS)
 
 
 def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = SAMPLE_RATE) -> str:
@@ -69,14 +77,14 @@ def _frames_from_video(video_path: str):
 
 class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
     def __init__(self):
-        self._sdk = None
+        self._StreamSDK = None
         self._ditto_run = None
         self._loading = True
         import threading
         def _load():
             try:
-                self._sdk, self._ditto_run = _load_ditto()
-                log.info("Portrait: %s", SOURCE_IMAGE)
+                self._StreamSDK, self._ditto_run = _load_ditto()
+                log.info("Ditto loaded. Portrait: %s", SOURCE_IMAGE)
             except Exception:
                 log.exception("Failed to load Ditto")
             finally:
@@ -124,12 +132,11 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
                 pcm_buf.extend(msg.pcm_s16le)
 
     async def _run_inference(self, pcm: bytes, session_id: str, turn_id: str, generation: int):
-        if self._sdk is None or self._ditto_run is None:
+        if self._StreamSDK is None or self._ditto_run is None:
             log.warning("Ditto not ready yet, skipping inference")
             return
 
         wav_path = _pcm_to_wav(pcm)
-        # Use a fixed session dir — avoids Ditto's internal tmp path issues
         out_dir = f"/tmp/ditto_out_{session_id}"
         os.makedirs(out_dir, exist_ok=True)
         out_video = os.path.join(out_dir, "output.mp4")
@@ -138,11 +145,15 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
             t0 = time.time()
             log.info("Inference start: %d bytes PCM", len(pcm))
 
+            # Fresh SDK per call — StreamSDK holds TRT state that breaks on reuse
+            sdk = self._StreamSDK(CFG_PKL, CHECKPOINTS)
+            ditto_run = self._ditto_run
+
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 None,
-                lambda: self._ditto_run(
-                    self._sdk,
+                lambda: ditto_run(
+                    sdk,
                     wav_path,
                     SOURCE_IMAGE,
                     out_video,
