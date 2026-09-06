@@ -27,7 +27,7 @@ _CORS_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o for o in _CORS_ORIGINS if o],
-    allow_origin_regex=r"http://\d+\.\d+\.\d+\.\d+:3000",  # any IP:3000
+    allow_origin_regex=r"https?://\d+\.\d+\.\d+\.\d+(:\d+)?",  # any IP, any port, http or https
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
