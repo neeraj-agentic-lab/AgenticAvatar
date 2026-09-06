@@ -66,9 +66,6 @@ services:
       - "3000:3000"
     env_file:
       - .env
-    environment:
-      - NEXT_PUBLIC_GATEWAY_URL=ws://localhost:8000
-      - NEXT_PUBLIC_LIVEKIT_URL=ws://localhost:7880
     volumes:
       - ./apps/web:/app
       - /app/node_modules
