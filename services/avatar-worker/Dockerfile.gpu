@@ -26,7 +26,10 @@ RUN pip install --no-cache-dir \
 # Clone Ditto and apply patches
 RUN git clone https://github.com/antgroup/ditto-talkinghead.git /ditto && \
     # Fix numpy 1.x vs 2.x atan2 API difference
-    sed -i 's/np\.atan2/np.arctan2/g' /ditto/core/aux_models/mediapipe_landmark478.py
+    sed -i 's/np\.atan2/np.arctan2/g' /ditto/core/aux_models/mediapipe_landmark478.py && \
+    # Pre-compile Cython blend module so startup is fast
+    cd /ditto && python -c "import pyximport; pyximport.install(); from core.utils.blend import blend_images_cy" && \
+    echo "Cython blend module compiled"
 
 # Generate gRPC stubs
 COPY packages/contracts/avatar.proto /tmp/avatar.proto
