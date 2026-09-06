@@ -40,9 +40,10 @@ SAMPLE_RATE  = 16000
 def _load_ditto():
     log.info("Loading Ditto from %s ...", CHECKPOINTS)
     from stream_pipeline_offline import StreamSDK
+    from inference import run as ditto_run
     sdk = StreamSDK(CFG_PKL, CHECKPOINTS)
     log.info("Ditto ready.")
-    return sdk
+    return sdk, ditto_run
 
 
 def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = SAMPLE_RATE) -> str:
@@ -69,12 +70,12 @@ def _frames_from_video(video_path: str):
 class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
     def __init__(self):
         self._sdk = None
+        self._ditto_run = None
         self._loading = True
-        # Load Ditto in background thread so gRPC starts immediately
         import threading
         def _load():
             try:
-                self._sdk = _load_ditto()
+                self._sdk, self._ditto_run = _load_ditto()
                 log.info("Portrait: %s", SOURCE_IMAGE)
             except Exception:
                 log.exception("Failed to load Ditto")
@@ -123,7 +124,7 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
                 pcm_buf.extend(msg.pcm_s16le)
 
     async def _run_inference(self, pcm: bytes, session_id: str, turn_id: str, generation: int):
-        if self._sdk is None:
+        if self._sdk is None or self._ditto_run is None:
             log.warning("Ditto not ready yet, skipping inference")
             return
 
@@ -138,10 +139,11 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 None,
-                lambda: self._sdk.inference(
-                    audio_path=wav_path,
-                    source_path=SOURCE_IMAGE,
-                    output_path=out_video,
+                lambda: self._ditto_run(
+                    self._sdk,
+                    wav_path,
+                    SOURCE_IMAGE,
+                    out_video,
                 ),
             )
 
