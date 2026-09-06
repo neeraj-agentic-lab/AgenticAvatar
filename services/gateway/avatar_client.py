@@ -31,7 +31,15 @@ class AvatarWorkerClient:
         self._stub: avatar_pb2_grpc.AvatarRendererStub | None = None
 
     async def connect(self) -> None:
-        self._channel = grpc.aio.insecure_channel(self._target)
+        # Force IPv4 — GCP internal DNS fails on AAAA (IPv6) queries
+        options = [
+            ("grpc.dns_min_time_between_resolutions_ms", 0),
+            ("grpc.enable_http_proxy", 0),
+        ]
+        self._channel = grpc.aio.insecure_channel(
+            self._target,
+            options=options,
+        )
         self._stub = avatar_pb2_grpc.AvatarRendererStub(self._channel)
 
     async def open_session(self, session_id: str, avatar_id: str = "default") -> None:

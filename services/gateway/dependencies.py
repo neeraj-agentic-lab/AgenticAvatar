@@ -44,4 +44,8 @@ def get_tts_adapter() -> TTSAdapter:
 
 @lru_cache
 def get_avatar_client() -> AvatarWorkerClient:
-    return AvatarWorkerClient(target=settings.avatar_worker_target)
+    # Prefix with ipv4: to force IPv4 — GCP internal DNS fails on AAAA queries
+    target = settings.avatar_worker_target
+    if not target.startswith("ipv4:") and not target.startswith("ipv6:"):
+        target = f"ipv4:{target}"
+    return AvatarWorkerClient(target=target)
