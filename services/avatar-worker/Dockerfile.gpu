@@ -1,19 +1,19 @@
-FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-devel
+FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel
 
 WORKDIR /app
 
-# System dependencies
+# System deps
 RUN apt-get update && apt-get install -y \
-    git git-lfs \
-    ffmpeg \
+    git git-lfs ffmpeg \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps for Ditto
+# Python deps — pinned to exact working versions
 RUN pip install --no-cache-dir \
+    "numpy>=2,<3" \
     tensorrt==8.6.1 \
-    numpy==2.0.1 \
+    cuda-python==12.1.0 \
     librosa \
     opencv-python-headless \
     imageio imageio-ffmpeg \
@@ -23,10 +23,12 @@ RUN pip install --no-cache-dir \
     grpcio==1.67.0 grpcio-tools==1.67.0 \
     protobuf==5.29.6
 
-# Clone Ditto repo
-RUN git clone https://github.com/antgroup/ditto-talkinghead.git /ditto
+# Clone Ditto and apply patches
+RUN git clone https://github.com/antgroup/ditto-talkinghead.git /ditto && \
+    # Fix numpy 1.x vs 2.x atan2 API difference
+    sed -i 's/np\.atan2/np.arctan2/g' /ditto/core/aux_models/mediapipe_landmark478.py
 
-# Generate proto stubs
+# Generate gRPC stubs
 COPY packages/contracts/avatar.proto /tmp/avatar.proto
 RUN mkdir -p /proto_gen && python -m grpc_tools.protoc \
     -I /tmp \
@@ -34,11 +36,14 @@ RUN mkdir -p /proto_gen && python -m grpc_tools.protoc \
     --grpc_python_out=/proto_gen \
     /tmp/avatar.proto
 
-# Copy avatar worker server
+# Copy GPU server
 COPY services/avatar-worker/server_gpu.py /app/server.py
 
 ENV PYTHONPATH="/proto_gen:/ditto:${PYTHONPATH}"
 ENV MOCK_MODE=false
+ENV DITTO_CHECKPOINTS=/models/ditto/checkpoints/ditto_trt_T4
+ENV DITTO_CFG=/models/ditto/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_t4.pkl
+ENV AVATAR_SOURCE_IMAGE=/models/ditto/portrait.jpg
 
 EXPOSE 50051
 CMD ["python", "/app/server.py"]
