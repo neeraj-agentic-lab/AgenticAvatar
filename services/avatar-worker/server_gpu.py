@@ -1,19 +1,19 @@
 """
-GPU avatar worker — wraps Ditto talkinghead in our gRPC streaming interface.
-Receives PCM audio chunks, accumulates them, runs Ditto inference,
-streams back encoded video frames.
+GPU avatar worker — real-time streaming using Ditto's online pipeline.
 
-Verified working with:
-  pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel
-  numpy>=2, tensorrt==8.6.1, cuda-python==12.1.0
+Flow per turn:
+  1. sdk.setup(portrait, output_path)  — precompute identity features
+  2. For each ~640ms audio chunk: sdk.run_chunk(audio_np)
+  3. Frames arrive in real-time via the writer_queue — we intercept them
+  4. Each frame is JPEG-encoded and yielded as a gRPC RenderOutput
 """
 
 import asyncio
 import logging
 import os
-import shutil
+import queue
 import sys
-import tempfile
+import threading
 import time
 import wave
 from pathlib import Path
@@ -35,64 +35,95 @@ CHECKPOINTS  = os.getenv("DITTO_CHECKPOINTS", "/models/ditto/checkpoints/ditto_t
 CFG_PKL      = os.getenv("DITTO_CFG",         "/models/ditto/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_t4.pkl")
 SOURCE_IMAGE = os.getenv("AVATAR_SOURCE_IMAGE", "/models/ditto/portrait.jpg")
 SAMPLE_RATE  = 16000
+CHUNK_SAMPLES = SAMPLE_RATE * 2   # ~2 seconds of audio per chunk (Ditto needs ~1-2s)
+
+
+class RealtimeStreamSDK:
+    """
+    Wraps Ditto's online StreamSDK to intercept frames in real-time
+    instead of writing them to a file.
+    """
+
+    def __init__(self, cfg_pkl: str, data_root: str):
+        from stream_pipeline_online import StreamSDK
+        self._sdk = StreamSDK(cfg_pkl, data_root)
+        self._frame_queue: queue.Queue = queue.Queue(maxsize=200)
+
+    def setup(self, source_path: str, output_path: str):
+        """Initialize identity features and start background workers."""
+        self._sdk.setup(source_path, output_path)
+        # Replace the writer worker with one that enqueues frames
+        self._sdk._writer_worker = self._intercepting_writer_worker
+        log.info("RealtimeStreamSDK ready, portrait=%s", source_path)
+
+    def _intercepting_writer_worker(self):
+        """Replaces Ditto's file writer — puts RGB frames into our queue instead."""
+        sdk = self._sdk
+        while not sdk.stop_event.is_set():
+            try:
+                item = sdk.writer_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if item is None:
+                self._frame_queue.put(None)  # signal end of stream
+                break
+            self._frame_queue.put(item)  # item is RGB ndarray
+            sdk.writer_pbar.update()
+
+    def run_chunk(self, audio_np: np.ndarray):
+        """Feed one audio chunk; frames appear asynchronously in frame_queue."""
+        self._sdk.run_chunk(audio_np)
+
+    def close(self):
+        self._sdk.close()
+
+    @property
+    def frame_queue(self) -> queue.Queue:
+        return self._frame_queue
 
 
 def _load_ditto():
-    """Load Ditto once — reuse the same SDK instance for all inference calls."""
-    log.info("Loading Ditto from %s ...", CHECKPOINTS)
-    from stream_pipeline_offline import StreamSDK
-    from inference import run as ditto_run
-    sdk = StreamSDK(CFG_PKL, CHECKPOINTS)
+    log.info("Loading Ditto (online mode) from %s ...", CHECKPOINTS)
+    sdk = RealtimeStreamSDK(CFG_PKL, CHECKPOINTS)
     log.info("Ditto ready.")
-    return sdk, ditto_run
+    return sdk
 
 
-def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = SAMPLE_RATE) -> str:
-    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    with wave.open(tmp.name, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm_bytes)
-    return tmp.name
+def _pcm_s16le_to_float32(pcm: bytes, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+    """Convert raw PCM s16le bytes to float32 numpy array at sample_rate."""
+    arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    return arr
 
 
-def _frames_from_video(video_path: str):
-    cap = cv2.VideoCapture(video_path)
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        yield buf.tobytes()
-    cap.release()
+def _rgb_to_jpeg(rgb: np.ndarray) -> bytes:
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    _, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return buf.tobytes()
 
 
 class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
     def __init__(self):
-        self._sdk = None
-        self._ditto_run = None
+        self._sdk: RealtimeStreamSDK | None = None
         self._loading = True
-        self._lock = None  # set after event loop starts
-        import threading
+        self._lock = threading.Lock()
+
         def _load():
             try:
-                self._sdk, self._ditto_run = _load_ditto()
-                log.info("Ditto loaded. Portrait: %s", SOURCE_IMAGE)
+                self._sdk = _load_ditto()
             except Exception:
                 log.exception("Failed to load Ditto")
             finally:
                 self._loading = False
+
         threading.Thread(target=_load, daemon=True).start()
 
     async def OpenSession(self, request, context):
-        # Wait for Ditto to finish loading (max 300s)
         for _ in range(300):
             if not self._loading:
                 break
             await asyncio.sleep(1)
         ready = self._sdk is not None
-        log.info("OpenSession %s (sdk ready: %s)", request.session_id, ready)
+        log.info("OpenSession %s (ready=%s)", request.session_id, ready)
         return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=ready)
 
     async def Stream(self, request_iterator, context):
@@ -106,8 +137,7 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
             turn_id    = msg.turn_id
 
             if msg.generation < generation:
-                continue  # stale
-
+                continue
             if msg.generation > generation:
                 generation = msg.generation
                 pcm_buf.clear()
@@ -125,72 +155,77 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
 
             elif msg.HasField("pcm_s16le"):
                 pcm_buf.extend(msg.pcm_s16le)
-                if len(pcm_buf) % (SAMPLE_RATE * 2) == 0:  # log every ~1s
-                    log.info("PCM buffer: %d bytes (%.1fs)", len(pcm_buf), len(pcm_buf)/(SAMPLE_RATE*2))
 
     async def _run_inference(self, pcm: bytes, session_id: str, turn_id: str, generation: int):
-        if self._sdk is None or self._ditto_run is None:
-            log.warning("Ditto not ready yet, skipping inference")
+        if self._sdk is None:
+            log.warning("Ditto not ready, skipping")
             return
 
-        duration_s = len(pcm) / (SAMPLE_RATE * 2)  # s16le = 2 bytes per sample
-        log.info("Inference start: %d bytes PCM, %.2fs audio", len(pcm), duration_s)
+        duration_s = len(pcm) / (SAMPLE_RATE * 2)
+        log.info("Inference start: %.2fs audio, session=%s", duration_s, session_id)
 
-        if duration_s < 0.5:
-            log.warning("Audio too short (%.2fs) — skipping inference", duration_s)
+        if duration_s < 0.3:
+            log.warning("Audio too short (%.2fs), skipping", duration_s)
             return
 
-        wav_path = _pcm_to_wav(pcm)
         out_dir = f"/tmp/ditto_out_{session_id}"
         os.makedirs(out_dir, exist_ok=True)
         out_video = os.path.join(out_dir, "output.mp4")
 
+        audio_f32 = _pcm_s16le_to_float32(pcm)
+        t0 = time.time()
+        frame_count = 0
+
         try:
-            t0 = time.time()
-            log.info("Running ditto_run with wav=%s source=%s output=%s", wav_path, SOURCE_IMAGE, out_video)
+            with self._lock:
+                # Setup identity features for this portrait
+                self._sdk.setup(SOURCE_IMAGE, out_video)
 
-            # Reuse the single SDK instance — creating a new one runs OOM on T4
-            sdk = self._sdk
-            ditto_run = self._ditto_run
+                # Feed audio in chunks
+                loop = asyncio.get_event_loop()
+                for start in range(0, len(audio_f32), CHUNK_SAMPLES):
+                    chunk = audio_f32[start:start + CHUNK_SAMPLES]
+                    if len(chunk) < 160:
+                        break
+                    await loop.run_in_executor(None, self._sdk.run_chunk, chunk)
 
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: ditto_run(
-                    sdk,
-                    wav_path,
-                    SOURCE_IMAGE,
-                    out_video,
-                ),
-            )
-            # Delete WAV only after ditto_run (and its internal ffmpeg) completes
-            Path(wav_path).unlink(missing_ok=True)
-            wav_path = None  # prevent double-delete in finally
+                # Signal end of audio
+                self._sdk._sdk.audio2motion_queue.put(None)
 
-            elapsed = time.time() - t0
-            exists = Path(out_video).exists()
-            size = Path(out_video).stat().st_size if exists else 0
-            log.info("Inference done in %.2fs — output exists=%s size=%d bytes", elapsed, exists, size)
+                # Drain frames as they arrive
+                ts_ms = int(time.time() * 1000)
+                while True:
+                    try:
+                        frame_rgb = await loop.run_in_executor(
+                            None,
+                            lambda: self._sdk.frame_queue.get(timeout=5.0)
+                        )
+                    except queue.Empty:
+                        break
 
-            ts_ms = int(time.time() * 1000)
-            frame_count = 0
-            for i, frame_bytes in enumerate(_frames_from_video(out_video)):
-                frame_count += 1
-                yield avatar_pb2.RenderOutput(
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    generation=generation,
-                    presentation_timestamp_ms=ts_ms + i * 40,
-                    encoded_frame=frame_bytes,
-                    keyframe=(i == 0),
-                )
-            log.info("Yielded %d frames to gateway", frame_count)
+                    if frame_rgb is None:
+                        break
+
+                    jpeg = await loop.run_in_executor(None, _rgb_to_jpeg, frame_rgb)
+                    frame_count += 1
+                    yield avatar_pb2.RenderOutput(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        generation=generation,
+                        presentation_timestamp_ms=ts_ms + frame_count * 40,
+                        encoded_frame=jpeg,
+                        keyframe=(frame_count == 1),
+                    )
+
         except Exception:
             log.exception("Inference failed")
         finally:
-            if wav_path:
-                Path(wav_path).unlink(missing_ok=True)
-            Path(out_video).unlink(missing_ok=True)
+            try:
+                self._sdk.close()
+            except Exception:
+                pass
+            log.info("Inference done: %d frames in %.2fs", frame_count, time.time() - t0)
+
 
     async def CloseSession(self, request, context):
         log.info("CloseSession %s", request.session_id)
