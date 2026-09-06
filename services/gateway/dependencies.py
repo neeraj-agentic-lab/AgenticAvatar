@@ -42,6 +42,6 @@ def get_tts_adapter() -> TTSAdapter:
     )
 
 
-@lru_cache
 def get_avatar_client() -> AvatarWorkerClient:
+    # New client per call — gRPC channel caches internally; don't cache broken connections
     return AvatarWorkerClient(target=settings.avatar_worker_target)
