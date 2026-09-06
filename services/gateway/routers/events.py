@@ -36,17 +36,22 @@ async def session_events(websocket: WebSocket, session_id: str):
     # Send ready immediately — Agentforce session created lazily on first turn
     agent_session_started = False
 
-    # LiveKit publisher — connects as server-side participant to publish avatar video
+    # LiveKit publisher — run in background so it can't crash the WebSocket handler
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
     publisher = LiveKitPublisher(session_id)
     publisher_ready = False
-    try:
-        await publisher.connect()
-        publisher_ready = True
-        import logging
-        logging.getLogger(__name__).info("LiveKit publisher ready for session %s", session_id)
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning("LiveKit publisher unavailable (video disabled): %s", e)
+
+    async def _connect_publisher():
+        nonlocal publisher_ready
+        try:
+            await publisher.connect()
+            publisher_ready = True
+            _log.info("LiveKit publisher ready for session %s", session_id)
+        except Exception as e:
+            _log.warning("LiveKit publisher unavailable (video disabled): %s", e)
+
+    asyncio.create_task(_connect_publisher())
 
     async def ensure_agent_session():
         nonlocal agent_session_started
