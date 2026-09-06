@@ -35,7 +35,7 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - AVATAR_WORKER_TARGET=avatar-worker:50051
+      - AVATAR_WORKER_TARGET=avatar-worker-gpu:50051
       - LIVEKIT_URL=ws://livekit:7880
     volumes:
       - ./services/gateway:/app
