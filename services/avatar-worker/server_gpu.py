@@ -97,8 +97,9 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
             if not self._loading:
                 break
             await asyncio.sleep(1)
-        log.info("OpenSession %s (sdk ready: %s)", request.session_id, self._sdk is not None)
-        return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=self._sdk is not None)
+        ready = self._StreamSDK is not None
+        log.info("OpenSession %s (sdk ready: %s)", request.session_id, ready)
+        return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=ready)
 
     async def Stream(self, request_iterator, context):
         pcm_buf     = bytearray()
