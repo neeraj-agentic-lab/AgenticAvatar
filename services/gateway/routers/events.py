@@ -39,10 +39,19 @@ async def session_events(websocket: WebSocket, session_id: str):
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    # LiveKit publisher — disabled until session is stable
-    # TODO: re-enable once gateway session stays alive reliably
-    publisher = None
+    publisher = LiveKitPublisher(session_id)
     publisher_ready = False
+
+    async def _connect_publisher():
+        nonlocal publisher_ready
+        try:
+            await publisher.connect()
+            publisher_ready = True
+            _log.info("LiveKit publisher ready for session %s", session_id)
+        except Exception as e:
+            _log.warning("LiveKit publisher unavailable: %s", e)
+
+    asyncio.ensure_future(_connect_publisher())
 
     async def ensure_agent_session():
         nonlocal agent_session_started
