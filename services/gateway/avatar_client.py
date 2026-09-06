@@ -31,10 +31,11 @@ class AvatarWorkerClient:
         self._stub: avatar_pb2_grpc.AvatarRendererStub | None = None
 
     async def connect(self) -> None:
-        # Force IPv4 — GCP internal DNS fails on AAAA (IPv6) queries
+        # Use dns:/// scheme with service config to prefer IPv4
+        # grpc.service_config disables happy eyeballs and sticks to A records
         options = [
-            ("grpc.dns_min_time_between_resolutions_ms", 0),
             ("grpc.enable_http_proxy", 0),
+            ("grpc.dns_enable_srv_queries", 0),
         ]
         self._channel = grpc.aio.insecure_channel(
             self._target,
