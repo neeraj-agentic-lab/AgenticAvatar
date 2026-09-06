@@ -3,6 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     app_env: str = "development"
+    public_host: str = ""  # set to VM external IP in production e.g. 35.254.129.208
 
     # Salesforce
     salesforce_login_url: str = "https://login.salesforce.com"

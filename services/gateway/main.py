@@ -19,9 +19,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AgenticAvatar Gateway", version="0.1.0", lifespan=lifespan)
 
+_CORS_ORIGINS = [
+    "http://localhost:3000",
+    f"http://{settings.public_host}:3000" if settings.public_host else None,
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[o for o in _CORS_ORIGINS if o],
+    allow_origin_regex=r"http://\d+\.\d+\.\d+\.\d+:3000",  # any IP:3000
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
