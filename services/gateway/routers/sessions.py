@@ -45,12 +45,12 @@ async def create_session(body: CreateSessionRequest):
 
     livekit_token = _make_livekit_token(session_id)
 
-    # TODO: store session in Redis
-    # TODO: Agentforce session created lazily on first turn (see events.py)
+    # Build WebSocket URL from public gateway URL (works for both local and GCP)
+    gateway_ws = settings.gateway_public_url.replace("http://", "ws://").replace("https://", "wss://")
 
     return CreateSessionResponse(
         session_id=session_id,
-        websocket_url=f"ws://localhost:8000/v1/sessions/{session_id}/events",
+        websocket_url=f"{gateway_ws}/v1/sessions/{session_id}/events",
         livekit_url=settings.livekit_public_url,
         livekit_token=livekit_token,
         expires_at="2099-01-01T00:00:00Z",
