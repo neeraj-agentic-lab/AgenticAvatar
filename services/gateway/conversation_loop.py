@@ -36,6 +36,7 @@ async def run_turn(
     send_event,           # async callable(dict) — sends JSON to the WebSocket client
     send_audio,           # async callable(bytes, int) — sends PCM to avatar worker
     current_generation,   # callable() -> int — returns latest generation atomically
+    on_turn_complete=None, # optional async callable() — called when all audio is sent
 ) -> None:
     """
     Run one full user turn:
@@ -132,6 +133,8 @@ async def run_turn(
                 "turn_id": ctx.turn_id,
                 "generation": ctx.generation,
             })
+            if on_turn_complete:
+                await on_turn_complete()
 
     async def _safe_collect():
         try:

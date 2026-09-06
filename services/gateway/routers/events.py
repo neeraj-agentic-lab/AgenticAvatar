@@ -145,6 +145,11 @@ async def session_events(websocket: WebSocket, session_id: str):
                 avatar_stream_task = asyncio.create_task(
                     run_avatar_stream(turn_id, generation)
                 )
+
+                async def _on_turn_complete():
+                    # Signal end-of-audio to avatar worker so it runs inference
+                    await avatar_audio_queue.put(None)
+
                 active_turn = asyncio.create_task(
                     run_turn(
                         ctx=ctx,
@@ -155,6 +160,7 @@ async def session_events(websocket: WebSocket, session_id: str):
                         send_event=send_event,
                         send_audio=send_audio,
                         current_generation=current_generation,
+                        on_turn_complete=_on_turn_complete,
                     )
                 )
 
@@ -203,6 +209,10 @@ async def session_events(websocket: WebSocket, session_id: str):
                 avatar_stream_task = asyncio.create_task(
                     run_avatar_stream(turn_id, generation)
                 )
+
+                async def _on_text_turn_complete():
+                    await avatar_audio_queue.put(None)
+
                 active_turn = asyncio.create_task(
                     run_turn(
                         ctx=ctx,
@@ -213,6 +223,7 @@ async def session_events(websocket: WebSocket, session_id: str):
                         send_event=send_event,
                         send_audio=send_audio,
                         current_generation=current_generation,
+                        on_turn_complete=_on_text_turn_complete,
                     )
                 )
 
