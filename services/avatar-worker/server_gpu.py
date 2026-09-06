@@ -131,6 +131,8 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
 
             elif msg.HasField("pcm_s16le"):
                 pcm_buf.extend(msg.pcm_s16le)
+                if len(pcm_buf) % (SAMPLE_RATE * 2) == 0:  # log every ~1s
+                    log.info("PCM buffer: %d bytes (%.1fs)", len(pcm_buf), len(pcm_buf)/(SAMPLE_RATE*2))
 
     async def _run_inference(self, pcm: bytes, session_id: str, turn_id: str, generation: int):
         if self._StreamSDK is None or self._ditto_run is None:
