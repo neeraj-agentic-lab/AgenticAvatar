@@ -129,7 +129,9 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
             return
 
         wav_path = _pcm_to_wav(pcm)
-        out_dir   = tempfile.mkdtemp()
+        # Use a fixed session dir — avoids Ditto's internal tmp path issues
+        out_dir = f"/tmp/ditto_out_{session_id}"
+        os.makedirs(out_dir, exist_ok=True)
         out_video = os.path.join(out_dir, "output.mp4")
 
         try:
@@ -163,7 +165,8 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
             log.exception("Inference failed")
         finally:
             Path(wav_path).unlink(missing_ok=True)
-            shutil.rmtree(out_dir, ignore_errors=True)
+            # Remove output video but keep dir for next turn
+            Path(out_video).unlink(missing_ok=True)
 
     async def CloseSession(self, request, context):
         log.info("CloseSession %s", request.session_id)
