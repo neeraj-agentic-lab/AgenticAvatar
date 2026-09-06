@@ -137,6 +137,13 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
             log.warning("Ditto not ready yet, skipping inference")
             return
 
+        duration_s = len(pcm) / (SAMPLE_RATE * 2)  # s16le = 2 bytes per sample
+        log.info("Inference start: %d bytes PCM, %.2fs audio", len(pcm), duration_s)
+
+        if duration_s < 0.5:
+            log.warning("Audio too short (%.2fs) — skipping inference", duration_s)
+            return
+
         wav_path = _pcm_to_wav(pcm)
         out_dir = f"/tmp/ditto_out_{session_id}"
         os.makedirs(out_dir, exist_ok=True)
@@ -144,7 +151,7 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
 
         try:
             t0 = time.time()
-            log.info("Inference start: %d bytes PCM", len(pcm))
+            log.info("Running ditto_run with wav=%s source=%s output=%s", wav_path, SOURCE_IMAGE, out_video)
 
             # Fresh SDK per call — StreamSDK holds TRT state that breaks on reuse
             sdk = self._StreamSDK(CFG_PKL, CHECKPOINTS)
@@ -161,10 +168,15 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
                 ),
             )
 
-            log.info("Inference done in %.2fs", time.time() - t0)
+            elapsed = time.time() - t0
+            exists = Path(out_video).exists()
+            size = Path(out_video).stat().st_size if exists else 0
+            log.info("Inference done in %.2fs — output exists=%s size=%d bytes", elapsed, exists, size)
 
             ts_ms = int(time.time() * 1000)
+            frame_count = 0
             for i, frame_bytes in enumerate(_frames_from_video(out_video)):
+                frame_count += 1
                 yield avatar_pb2.RenderOutput(
                     session_id=session_id,
                     turn_id=turn_id,
@@ -173,6 +185,7 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
                     encoded_frame=frame_bytes,
                     keyframe=(i == 0),
                 )
+            log.info("Yielded %d frames to gateway", frame_count)
         except Exception:
             log.exception("Inference failed")
         finally:
