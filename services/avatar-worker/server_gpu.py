@@ -38,20 +38,13 @@ SAMPLE_RATE  = 16000
 
 
 def _load_ditto():
-    """Import modules once — SDK must be created fresh per inference call."""
-    log.info("Importing Ditto modules from %s ...", CHECKPOINTS)
+    """Load Ditto once — reuse the same SDK instance for all inference calls."""
+    log.info("Loading Ditto from %s ...", CHECKPOINTS)
     from stream_pipeline_offline import StreamSDK
     from inference import run as ditto_run
-    # Warm up by creating one SDK instance to load TRT engines into GPU
     sdk = StreamSDK(CFG_PKL, CHECKPOINTS)
     log.info("Ditto ready.")
-    return StreamSDK, ditto_run
-
-
-def _make_sdk():
-    """Create a fresh StreamSDK instance for each inference call."""
-    from stream_pipeline_offline import StreamSDK
-    return StreamSDK(CFG_PKL, CHECKPOINTS)
+    return sdk, ditto_run
 
 
 def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = SAMPLE_RATE) -> str:
@@ -77,13 +70,14 @@ def _frames_from_video(video_path: str):
 
 class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
     def __init__(self):
-        self._StreamSDK = None
+        self._sdk = None
         self._ditto_run = None
         self._loading = True
+        self._lock = None  # set after event loop starts
         import threading
         def _load():
             try:
-                self._StreamSDK, self._ditto_run = _load_ditto()
+                self._sdk, self._ditto_run = _load_ditto()
                 log.info("Ditto loaded. Portrait: %s", SOURCE_IMAGE)
             except Exception:
                 log.exception("Failed to load Ditto")
@@ -97,7 +91,7 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
             if not self._loading:
                 break
             await asyncio.sleep(1)
-        ready = self._StreamSDK is not None
+        ready = self._sdk is not None
         log.info("OpenSession %s (sdk ready: %s)", request.session_id, ready)
         return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=ready)
 
@@ -135,7 +129,7 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
                     log.info("PCM buffer: %d bytes (%.1fs)", len(pcm_buf), len(pcm_buf)/(SAMPLE_RATE*2))
 
     async def _run_inference(self, pcm: bytes, session_id: str, turn_id: str, generation: int):
-        if self._StreamSDK is None or self._ditto_run is None:
+        if self._sdk is None or self._ditto_run is None:
             log.warning("Ditto not ready yet, skipping inference")
             return
 
@@ -155,8 +149,8 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
             t0 = time.time()
             log.info("Running ditto_run with wav=%s source=%s output=%s", wav_path, SOURCE_IMAGE, out_video)
 
-            # Fresh SDK per call — StreamSDK holds TRT state that breaks on reuse
-            sdk = self._StreamSDK(CFG_PKL, CHECKPOINTS)
+            # Reuse the single SDK instance — creating a new one runs OOM on T4
+            sdk = self._sdk
             ditto_run = self._ditto_run
 
             loop = asyncio.get_event_loop()
