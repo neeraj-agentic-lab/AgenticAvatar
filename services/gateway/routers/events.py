@@ -36,23 +36,13 @@ async def session_events(websocket: WebSocket, session_id: str):
     # Send ready immediately — Agentforce session created lazily on first turn
     agent_session_started = False
 
-    # LiveKit publisher — run in background so it can't crash the WebSocket handler
     import logging as _logging
     _log = _logging.getLogger(__name__)
-    publisher = LiveKitPublisher(session_id)
+
+    # LiveKit publisher — disabled until session is stable
+    # TODO: re-enable once gateway session stays alive reliably
+    publisher = None
     publisher_ready = False
-
-    async def _connect_publisher():
-        nonlocal publisher_ready
-        try:
-            await asyncio.wait_for(publisher.connect(), timeout=10.0)
-            publisher_ready = True
-            _log.info("LiveKit publisher ready for session %s", session_id)
-        except BaseException as e:
-            _log.warning("LiveKit publisher unavailable: %s", e)
-
-    # Fire-and-forget — must not propagate exceptions to the WebSocket handler
-    asyncio.ensure_future(_connect_publisher())
 
     async def ensure_agent_session():
         nonlocal agent_session_started
@@ -74,8 +64,12 @@ async def session_events(websocket: WebSocket, session_id: str):
         except Exception:
             pass
 
+    total_pcm_bytes = 0
+
     async def send_audio(pcm: bytes, timestamp_ms: int) -> None:
         """Route PCM to avatar worker and also stream directly to browser."""
+        nonlocal total_pcm_bytes
+        total_pcm_bytes += len(pcm)
         await avatar_audio_queue.put(pcm)
         try:
             await websocket.send_bytes(pcm)
@@ -87,13 +81,19 @@ async def session_events(websocket: WebSocket, session_id: str):
 
     async def run_avatar_stream(turn_id: str, gen: int) -> None:
         """Forward PCM to avatar worker, push returned frames to LiveKit."""
+        _log.info("Avatar stream started turn=%s gen=%d", turn_id, gen)
+
         async def pcm_source():
+            total = 0
             while True:
                 chunk = await avatar_audio_queue.get()
                 if chunk is None:
+                    _log.info("PCM stream ended — sent %d bytes to worker", total)
                     return
+                total += len(chunk)
                 yield chunk
 
+        frame_count = 0
         async for frame in avatar.stream(
             session_id=session_id,
             turn_id=turn_id,
@@ -101,8 +101,12 @@ async def session_events(websocket: WebSocket, session_id: str):
             audio_chunks=pcm_source(),
             current_generation=current_generation,
         ):
-            if publisher_ready:
+            frame_count += 1
+            if frame_count == 1:
+                _log.info("First frame received from worker turn=%s", turn_id)
+            if publisher_ready and publisher:
                 await publisher.push_frame(frame.encoded_frame, frame.presentation_timestamp_ms)
+        _log.info("Avatar stream done — %d frames turn=%s", frame_count, turn_id)
 
     def cancel_active_turn() -> None:
         nonlocal active_turn, avatar_stream_task
@@ -255,7 +259,8 @@ async def session_events(websocket: WebSocket, session_id: str):
             await conversation.end_session(session_id)
             await avatar.close_session(session_id)
         await tts.close()
-        try:
-            await publisher.disconnect()
-        except Exception:
-            pass
+        if publisher:
+            try:
+                await publisher.disconnect()
+            except Exception:
+                pass
