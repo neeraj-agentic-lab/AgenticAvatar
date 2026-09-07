@@ -58,11 +58,23 @@ async def session_events(websocket: WebSocket, session_id: str):
         except Exception:
             pass
 
+    def _resample_24k_to_16k(pcm_24k: bytes) -> bytes:
+        """Resample PCM s16le from 24kHz to 16kHz for Ditto HuBERT (expects 16kHz)."""
+        import numpy as np
+        samples = np.frombuffer(pcm_24k, dtype=np.int16).astype(np.float32)
+        # Simple linear interpolation resample 24000 → 16000 (ratio 2/3)
+        new_len = int(len(samples) * 16000 / 24000)
+        indices = np.linspace(0, len(samples) - 1, new_len)
+        resampled = np.interp(indices, np.arange(len(samples)), samples).astype(np.int16)
+        return resampled.tobytes()
+
     async def send_audio(pcm: bytes, timestamp_ms: int) -> None:
-        """Send PCM to avatar worker queue and to browser audio player."""
-        await avatar_audio_queue.put(pcm)
+        """Send PCM to browser (24kHz) and resampled 16kHz version to avatar worker."""
+        # Avatar worker expects 16kHz — resample from Kokoro's 24kHz output
+        pcm_16k = _resample_24k_to_16k(pcm)
+        await avatar_audio_queue.put(pcm_16k)
         try:
-            await websocket.send_bytes(pcm)
+            await websocket.send_bytes(pcm)  # browser gets original 24kHz
         except Exception:
             pass
 
