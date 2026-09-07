@@ -223,12 +223,15 @@ class RealtimeStreamSDK:
 
 def _load_ditto():
     try:
+        import time
         log.info("Step 1/3: Initializing StreamSDK (loading TRT engines)...")
+        t0 = time.time()
         sdk = RealtimeStreamSDK(CFG_PKL, CHECKPOINTS)
-        log.info("Step 2/3: StreamSDK ready. Precomputing portrait features...")
+        log.info("Step 2/3: StreamSDK ready in %.1fs. Precomputing portrait features...", time.time() - t0)
         os.makedirs("/tmp/ditto_warmup", exist_ok=True)
+        t1 = time.time()
         sdk.setup(SOURCE_IMAGE, "/tmp/ditto_warmup/output.mp4")
-        log.info("Step 3/3: Portrait precomputed. Ditto fully ready for sessions.")
+        log.info("Step 3/3: Portrait precomputed in %.1fs. Ditto fully ready.", time.time() - t1)
         return sdk
     except Exception:
         log.exception("FATAL: Failed to load Ditto")
@@ -244,12 +247,16 @@ def _rgb_to_jpeg(rgb: np.ndarray) -> bytes:
 # ── gRPC server ───────────────────────────────────────────────────────────────
 
 class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
-    def __init__(self):
-        self._sdk: RealtimeStreamSDK | None = None
-        self._loading = True
+    def __init__(self, preloaded_sdk: "RealtimeStreamSDK | None" = None):
+        # Accept a pre-loaded SDK (loaded before asyncio starts) to avoid CUDA deadlock
+        self._sdk: RealtimeStreamSDK | None = preloaded_sdk
+        self._loading = preloaded_sdk is None
         self._ditto_lock = threading.Lock()
-        # room_name → LiveKitRoomPublisher
         self._publishers: dict[str, LiveKitRoomPublisher] = {}
+
+        if preloaded_sdk is not None:
+            log.info("Using pre-loaded Ditto SDK")
+            return
 
         def _load():
             try:
@@ -394,9 +401,9 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
         return avatar_pb2.CloseSessionResponse(ok=True)
 
 
-async def serve():
+async def serve(preloaded_sdk=None):
     server = grpc.aio.server()
-    avatar_pb2_grpc.add_AvatarRendererServicer_to_server(AvatarRendererServicer(), server)
+    avatar_pb2_grpc.add_AvatarRendererServicer_to_server(AvatarRendererServicer(preloaded_sdk), server)
     server.add_insecure_port("[::]:50051")
     log.info("GPU avatar worker listening on :50051")
     await server.start()
@@ -404,4 +411,9 @@ async def serve():
 
 
 if __name__ == "__main__":
-    asyncio.run(serve())
+    # Load Ditto BEFORE starting asyncio to avoid CUDA context deadlock
+    # (TRT engine loading in a thread inside an asyncio process can hang)
+    log.info("Pre-loading Ditto before starting asyncio event loop...")
+    sdk = _load_ditto()
+    log.info("Ditto pre-loaded. Starting gRPC server...")
+    asyncio.run(serve(preloaded_sdk=sdk))
