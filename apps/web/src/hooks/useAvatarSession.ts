@@ -74,13 +74,8 @@ export function useAvatarSession(): AvatarSessionHook {
         if (track.kind === Track.Kind.Video) setVideoTrack(null);
       });
 
-      try {
-        await room.connect(session.livekit_url, session.livekit_token);
-      } catch (err) {
-        console.warn("[livekit] connection failed — audio will still work:", err);
-      }
-
       // ── WebSocket control channel ────────────────────────────────────────
+      // Open WebSocket FIRST — don't let LiveKit failures block audio/conversation
       const ws = new WebSocket(session.websocket_url);
       wsRef.current = ws;
 
@@ -101,6 +96,9 @@ export function useAvatarSession(): AvatarSessionHook {
         switch (msg.type) {
           case "session.ready":
             setState("listening");
+            // Connect LiveKit after session is ready — non-blocking, video only
+            room.connect(session.livekit_url, session.livekit_token)
+              .catch(err => console.warn("[livekit] video unavailable:", err));
             // Start mic only now — prevents VAD firing during connecting phase
             _startMic().catch(err => {
               console.error("Mic start failed:", err);
@@ -138,6 +136,12 @@ export function useAvatarSession(): AvatarSessionHook {
 
       ws.onerror = () => {
         setError("WebSocket connection error");
+        setState("error");
+      };
+
+      ws.onclose = () => {
+        console.warn("[ws] connection closed unexpectedly");
+        setError("Connection lost — please refresh");
         setState("error");
       };
 
