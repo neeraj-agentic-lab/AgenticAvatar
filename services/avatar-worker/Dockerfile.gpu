@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir \
     scikit-image \
     cython \
     colored tqdm filetype \
+    onnxruntime-gpu \
     grpcio==1.67.0 grpcio-tools==1.67.0 \
     protobuf==5.29.6
 
@@ -45,7 +46,7 @@ COPY services/avatar-worker/server_gpu.py /app/server.py
 ENV PYTHONPATH="/proto_gen:/ditto:${PYTHONPATH}"
 ENV MOCK_MODE=false
 ENV DITTO_CHECKPOINTS=/models/ditto/checkpoints/ditto_trt_T4
-ENV DITTO_CFG=/models/ditto/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_t4.pkl
+ENV DITTO_CFG=/models/ditto/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_t4_online.pkl
 ENV AVATAR_SOURCE_IMAGE=/models/ditto/portrait.jpg
 
 EXPOSE 50051
