@@ -98,7 +98,12 @@ class RealtimeStreamSDK:
 def _load_ditto():
     log.info("Loading Ditto (online mode) from %s ...", CHECKPOINTS)
     sdk = RealtimeStreamSDK(CFG_PKL, CHECKPOINTS)
-    log.info("Ditto loaded.")
+    log.info("Ditto TRT engines loaded.")
+
+    # Precompute portrait identity features at startup — eliminates per-session delay
+    os.makedirs("/tmp/ditto_warmup", exist_ok=True)
+    sdk.setup(SOURCE_IMAGE, "/tmp/ditto_warmup/output.mp4")
+    log.info("Portrait precomputed. Ready for sessions.")
     return sdk
 
 
@@ -125,29 +130,15 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
         threading.Thread(target=_load, daemon=True).start()
 
     async def OpenSession(self, request, context):
+        # Wait for startup loading (TRT engines + portrait precompute)
         for _ in range(300):
             if not self._loading:
                 break
             await asyncio.sleep(1)
 
-        if self._sdk is None:
-            log.error("Ditto not loaded")
-            return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=False)
-
-        # Precompute portrait identity features now — not at inference time
-        out_dir   = f"/tmp/ditto_out_{request.session_id}"
-        os.makedirs(out_dir, exist_ok=True)
-        out_video = os.path.join(out_dir, "output.mp4")
-
-        loop = asyncio.get_event_loop()
-        try:
-            await loop.run_in_executor(None, lambda: self._sdk.setup(SOURCE_IMAGE, out_video))
-            log.info("OpenSession %s — portrait ready", request.session_id)
-        except Exception:
-            log.exception("Portrait setup failed")
-            return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=False)
-
-        return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=True)
+        ready = self._sdk is not None and self._sdk._setup_done
+        log.info("OpenSession %s (ready=%s)", request.session_id, ready)
+        return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=ready)
 
     async def Stream(self, request_iterator, context):
         if self._sdk is None:
