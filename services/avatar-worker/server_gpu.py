@@ -175,8 +175,9 @@ class RealtimeStreamSDK:
         self._setup_done = False
 
     def setup(self, source_path: str, output_path: str):
-        self._sdk.setup(source_path, output_path)
+        # Replace writer BEFORE setup() starts background threads
         self._sdk._writer_worker = self._intercepting_writer_worker
+        self._sdk.setup(source_path, output_path)
         self._setup_done = True
 
     def _intercepting_writer_worker(self):
