@@ -41,12 +41,16 @@ async def session_events(websocket: WebSocket, session_id: str):
         if not agent_session_started:
             agent_session_started = True
             await conversation.start_session(session_id)
-            try:
-                await avatar.connect()
-                await avatar.open_session(session_id)
-                log.info("Avatar worker connected session=%s", session_id)
-            except Exception as e:
-                log.error("Avatar worker connection failed: %s", e)
+            # Connect avatar worker as a background task — OpenSession can block
+            # for up to 300s waiting for Ditto to load. Don't block conversation.
+            async def _connect_avatar():
+                try:
+                    await avatar.connect()
+                    await avatar.open_session(session_id)
+                    log.info("Avatar worker connected session=%s", session_id)
+                except Exception as e:
+                    log.error("Avatar worker connection failed: %s", e)
+            asyncio.create_task(_connect_avatar())
 
     async def send_event(payload: dict) -> None:
         try:
