@@ -39,17 +39,25 @@ async def session_events(websocket: WebSocket, session_id: str):
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    # Connect LiveKit publisher synchronously before the main loop.
-    # Using ensure_future() previously caused rtc.Room() internal background
-    # tasks to corrupt the event loop and silently kill the WebSocket.
+    # Connect LiveKit publisher in a tracked background task.
+    # We send session.ready immediately so the browser doesn't time out.
+    # publisher_ready is checked when frames arrive — by then it should be connected.
     publisher = LiveKitPublisher(session_id)
     publisher_ready = False
-    try:
-        await asyncio.wait_for(publisher.connect(), timeout=8.0)
-        publisher_ready = True
-        _log.info("LiveKit publisher ready for session %s", session_id)
-    except Exception as e:
-        _log.warning("LiveKit publisher unavailable (video disabled): %s", e)
+
+    async def _connect_publisher():
+        nonlocal publisher_ready
+        try:
+            await asyncio.wait_for(publisher.connect(), timeout=10.0)
+            publisher_ready = True
+            _log.info("LiveKit publisher ready for session %s", session_id)
+        except Exception as e:
+            _log.warning("LiveKit publisher unavailable (video disabled): %s", e)
+
+    # Use shield() so the task doesn't get cancelled if the session ends early,
+    # and suppress_exceptions=True so it can't propagate to the event loop.
+    _pub_task = asyncio.create_task(_connect_publisher(), name=f"publisher-{session_id}")
+    _pub_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
     async def ensure_agent_session():
         nonlocal agent_session_started
@@ -269,6 +277,7 @@ async def session_events(websocket: WebSocket, session_id: str):
             await conversation.end_session(session_id)
             await avatar.close_session(session_id)
         await tts.close()
+        _pub_task.cancel()
         if publisher:
             try:
                 await publisher.disconnect()
