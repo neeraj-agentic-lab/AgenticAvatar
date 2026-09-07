@@ -39,19 +39,17 @@ async def session_events(websocket: WebSocket, session_id: str):
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
+    # Connect LiveKit publisher synchronously before the main loop.
+    # Using ensure_future() previously caused rtc.Room() internal background
+    # tasks to corrupt the event loop and silently kill the WebSocket.
     publisher = LiveKitPublisher(session_id)
     publisher_ready = False
-
-    async def _connect_publisher():
-        nonlocal publisher_ready
-        try:
-            await publisher.connect()
-            publisher_ready = True
-            _log.info("LiveKit publisher ready for session %s", session_id)
-        except Exception as e:
-            _log.warning("LiveKit publisher unavailable: %s", e)
-
-    asyncio.ensure_future(_connect_publisher())
+    try:
+        await asyncio.wait_for(publisher.connect(), timeout=8.0)
+        publisher_ready = True
+        _log.info("LiveKit publisher ready for session %s", session_id)
+    except Exception as e:
+        _log.warning("LiveKit publisher unavailable (video disabled): %s", e)
 
     async def ensure_agent_session():
         nonlocal agent_session_started
@@ -103,6 +101,9 @@ async def session_events(websocket: WebSocket, session_id: str):
                 yield chunk
 
         frame_count = 0
+        if not publisher_ready:
+            _log.warning("Publisher not ready — frames will be dropped turn=%s", turn_id)
+
         async for frame in avatar.stream(
             session_id=session_id,
             turn_id=turn_id,
@@ -112,7 +113,7 @@ async def session_events(websocket: WebSocket, session_id: str):
         ):
             frame_count += 1
             if frame_count == 1:
-                _log.info("First frame received from worker turn=%s", turn_id)
+                _log.info("First frame received from worker turn=%s publisher_ready=%s", turn_id, publisher_ready)
             if publisher_ready and publisher:
                 await publisher.push_frame(frame.encoded_frame, frame.presentation_timestamp_ms)
         _log.info("Avatar stream done — %d frames turn=%s", frame_count, turn_id)
