@@ -175,10 +175,12 @@ class RealtimeStreamSDK:
         self._setup_done = False
 
     def setup(self, source_path: str, output_path: str):
+        log.info("RealtimeStreamSDK.setup() portrait=%s", source_path)
         # Replace writer BEFORE setup() starts background threads
         self._sdk._writer_worker = self._intercepting_writer_worker
         self._sdk.setup(source_path, output_path)
         self._setup_done = True
+        log.info("RealtimeStreamSDK.setup() complete, threads started")
 
     def _intercepting_writer_worker(self):
         sdk = self._sdk
@@ -194,6 +196,7 @@ class RealtimeStreamSDK:
             sdk.writer_pbar.update()
 
     def run_chunk(self, audio_np: np.ndarray):
+        log.debug("run_chunk: %d samples", len(audio_np))
         self._sdk.run_chunk(audio_np)
 
     def signal_end(self):
@@ -219,12 +222,17 @@ class RealtimeStreamSDK:
 
 
 def _load_ditto():
-    log.info("Loading Ditto (online mode) from %s ...", CHECKPOINTS)
-    sdk = RealtimeStreamSDK(CFG_PKL, CHECKPOINTS)
-    os.makedirs("/tmp/ditto_warmup", exist_ok=True)
-    sdk.setup(SOURCE_IMAGE, "/tmp/ditto_warmup/output.mp4")
-    log.info("Portrait precomputed. Ready for sessions.")
-    return sdk
+    try:
+        log.info("Step 1/3: Initializing StreamSDK (loading TRT engines)...")
+        sdk = RealtimeStreamSDK(CFG_PKL, CHECKPOINTS)
+        log.info("Step 2/3: StreamSDK ready. Precomputing portrait features...")
+        os.makedirs("/tmp/ditto_warmup", exist_ok=True)
+        sdk.setup(SOURCE_IMAGE, "/tmp/ditto_warmup/output.mp4")
+        log.info("Step 3/3: Portrait precomputed. Ditto fully ready for sessions.")
+        return sdk
+    except Exception:
+        log.exception("FATAL: Failed to load Ditto")
+        raise
 
 
 def _rgb_to_jpeg(rgb: np.ndarray) -> bytes:
