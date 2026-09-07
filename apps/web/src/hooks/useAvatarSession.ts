@@ -74,7 +74,11 @@ export function useAvatarSession(): AvatarSessionHook {
         if (track.kind === Track.Kind.Video) setVideoTrack(null);
       });
 
-      await room.connect(session.livekit_url, session.livekit_token);
+      try {
+        await room.connect(session.livekit_url, session.livekit_token);
+      } catch (err) {
+        console.warn("[livekit] connection failed — audio will still work:", err);
+      }
 
       // ── WebSocket control channel ────────────────────────────────────────
       const ws = new WebSocket(session.websocket_url);
