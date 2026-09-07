@@ -1,11 +1,10 @@
 """
 GPU avatar worker — real-time streaming using Ditto's online pipeline.
 
-Flow per turn:
-  1. sdk.setup(portrait, output_path)  — precompute identity features
-  2. For each ~2s audio chunk: sdk.run_chunk(audio_np)
-  3. Frames arrive in real-time via the intercepted writer_queue
-  4. Each frame is JPEG-encoded and yielded as a gRPC RenderOutput
+Flow:
+  1. OpenSession → sdk.setup(portrait) — precompute identity features once
+  2. Stream RPC: each pcm_s16le chunk → sdk.run_chunk() → yield frames immediately
+  3. IDLE control → signal pipeline end → yield remaining frames
 """
 
 import asyncio
@@ -31,29 +30,29 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 CHECKPOINTS  = os.getenv("DITTO_CHECKPOINTS", "/models/ditto/checkpoints/ditto_trt_T4")
-CFG_PKL      = os.getenv("DITTO_CFG",         "/models/ditto/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_t4_online.pkl")
+CFG_PKL      = os.getenv("DITTO_CFG", "/models/ditto/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_t4_online.pkl")
 SOURCE_IMAGE = os.getenv("AVATAR_SOURCE_IMAGE", "/models/ditto/portrait.jpg")
-SAMPLE_RATE   = 16000
+SAMPLE_RATE  = 16000
 # Ditto online pipeline requires exactly this chunk size:
 # int(sum(chunksize) * 0.04 * 16000) + 80 where chunksize=(3,5,2) → 6480 samples
 CHUNK_SAMPLES = 6480
 
 
 class RealtimeStreamSDK:
-    """Wraps Ditto online StreamSDK, intercepting frames before they go to the file writer."""
+    """Wraps Ditto online StreamSDK, yielding frames from writer_queue in real-time."""
 
     def __init__(self, cfg_pkl: str, data_root: str):
         from stream_pipeline_online import StreamSDK
         self._sdk = StreamSDK(cfg_pkl, data_root)
         self._frame_queue: queue.Queue = queue.Queue(maxsize=500)
-        log.info("RealtimeStreamSDK constructed")
+        self._setup_done = False
 
     def setup(self, source_path: str, output_path: str):
-        """Initialize portrait identity and start background worker threads."""
         self._sdk.setup(source_path, output_path)
-        # Monkey-patch the writer worker to enqueue frames instead of writing to file
+        # Replace writer worker with frame interceptor
         self._sdk._writer_worker = self._intercepting_writer_worker
-        log.info("RealtimeStreamSDK setup complete, portrait=%s", source_path)
+        self._setup_done = True
+        log.info("Portrait features precomputed: %s", source_path)
 
     def _intercepting_writer_worker(self):
         sdk = self._sdk
@@ -69,10 +68,11 @@ class RealtimeStreamSDK:
             sdk.writer_pbar.update()
 
     def run_chunk(self, audio_np: np.ndarray):
+        if not self._setup_done:
+            raise RuntimeError("Call setup() before run_chunk()")
         self._sdk.run_chunk(audio_np)
 
     def signal_end(self):
-        """Signal end of audio to the pipeline."""
         try:
             self._sdk.audio2motion_queue.put(None)
         except Exception:
@@ -83,8 +83,8 @@ class RealtimeStreamSDK:
             self._sdk.close()
         except Exception:
             pass
-        # Drain the frame queue
-        while not self._frame_queue.empty():
+        # Drain queue
+        while True:
             try:
                 self._frame_queue.get_nowait()
             except queue.Empty:
@@ -98,7 +98,7 @@ class RealtimeStreamSDK:
 def _load_ditto():
     log.info("Loading Ditto (online mode) from %s ...", CHECKPOINTS)
     sdk = RealtimeStreamSDK(CFG_PKL, CHECKPOINTS)
-    log.info("Ditto ready.")
+    log.info("Ditto loaded.")
     return sdk
 
 
@@ -129,15 +129,37 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
             if not self._loading:
                 break
             await asyncio.sleep(1)
-        ready = self._sdk is not None
-        log.info("OpenSession %s (ready=%s)", request.session_id, ready)
-        return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=ready)
+
+        if self._sdk is None:
+            log.error("Ditto not loaded")
+            return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=False)
+
+        # Precompute portrait identity features now — not at inference time
+        out_dir   = f"/tmp/ditto_out_{request.session_id}"
+        os.makedirs(out_dir, exist_ok=True)
+        out_video = os.path.join(out_dir, "output.mp4")
+
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(None, lambda: self._sdk.setup(SOURCE_IMAGE, out_video))
+            log.info("OpenSession %s — portrait ready", request.session_id)
+        except Exception:
+            log.exception("Portrait setup failed")
+            return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=False)
+
+        return avatar_pb2.OpenSessionResponse(session_id=request.session_id, ready=True)
 
     async def Stream(self, request_iterator, context):
-        pcm_buf    = bytearray()
-        generation = 0
-        session_id = ""
-        turn_id    = ""
+        if self._sdk is None:
+            return
+
+        generation   = 0
+        session_id   = ""
+        turn_id      = ""
+        pcm_leftover = np.array([], dtype=np.float32)  # partial chunk buffer
+        frame_count  = 0
+        ts_ms        = int(time.time() * 1000)
+        loop         = asyncio.get_event_loop()
 
         async for msg in request_iterator:
             session_id = msg.session_id
@@ -146,94 +168,86 @@ class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
             if msg.generation < generation:
                 continue
             if msg.generation > generation:
-                generation = msg.generation
-                pcm_buf.clear()
+                generation   = msg.generation
+                pcm_leftover = np.array([], dtype=np.float32)
 
             if msg.HasField("control"):
                 if msg.control.type == avatar_pb2.ControlEvent.INTERRUPT:
-                    pcm_buf.clear()
+                    pcm_leftover = np.array([], dtype=np.float32)
+                    self._sdk.signal_end()
+
                 elif msg.control.type == avatar_pb2.ControlEvent.IDLE:
-                    if pcm_buf:
-                        async for frame in self._run_inference(
-                            bytes(pcm_buf), session_id, turn_id, generation
-                        ):
-                            yield frame
-                        pcm_buf.clear()
+                    # Signal end of audio — flush remaining frames
+                    self._sdk.signal_end()
+                    # Drain remaining frames
+                    async for frame in self._drain_frames(session_id, turn_id, generation, ts_ms, frame_count, loop):
+                        frame_count += 1
+                        yield frame
+                    log.info("Turn done: %d frames total", frame_count)
+                    frame_count = 0
+                    ts_ms = int(time.time() * 1000)
+
             elif msg.HasField("pcm_s16le"):
-                pcm_buf.extend(msg.pcm_s16le)
+                audio_f32 = np.frombuffer(msg.pcm_s16le, dtype=np.int16).astype(np.float32) / 32768.0
+                combined  = np.concatenate([pcm_leftover, audio_f32])
 
-    async def _run_inference(self, pcm: bytes, session_id: str, turn_id: str, generation: int):
-        if self._sdk is None:
-            log.warning("Ditto not ready, skipping")
-            return
-
-        duration_s = len(pcm) / (SAMPLE_RATE * 2)
-        log.info("Inference start: %.2fs audio", duration_s)
-
-        if duration_s < 0.3:
-            log.warning("Audio too short %.2fs", duration_s)
-            return
-
-        out_dir   = f"/tmp/ditto_out_{session_id}"
-        os.makedirs(out_dir, exist_ok=True)
-        out_video = os.path.join(out_dir, "output.mp4")
-
-        audio_f32 = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-        t0 = time.time()
-        frame_count = 0
-
-        try:
-            with self._lock:
-                self._sdk.setup(SOURCE_IMAGE, out_video)
-                loop = asyncio.get_event_loop()
-
-                # Feed audio in chunks
-                for start in range(0, len(audio_f32), CHUNK_SAMPLES):
-                    chunk = audio_f32[start:start + CHUNK_SAMPLES]
-                    if len(chunk) < 160:
-                        break
-                    await loop.run_in_executor(None, self._sdk.run_chunk, chunk)
-
-                # Signal end of audio
-                self._sdk.signal_end()
-
-                # Drain frames as they arrive in real-time
-                ts_ms = int(time.time() * 1000)
-                while True:
+                # Process all complete 6480-sample chunks immediately
+                i = 0
+                while i + CHUNK_SAMPLES <= len(combined):
+                    chunk = combined[i:i + CHUNK_SAMPLES]
                     try:
-                        frame_rgb = await loop.run_in_executor(
-                            None,
-                            lambda: self._sdk.frame_queue.get(timeout=5.0)
-                        )
-                    except queue.Empty:
-                        log.warning("Frame queue timeout — no more frames")
-                        break
+                        await loop.run_in_executor(None, self._sdk.run_chunk, chunk)
+                    except Exception as e:
+                        log.warning("run_chunk error: %s", e)
+                    i += CHUNK_SAMPLES
 
-                    if frame_rgb is None:
-                        break
+                    # Immediately yield any frames that came out
+                    while not self._sdk.frame_queue.empty():
+                        frame_rgb = self._sdk.frame_queue.get_nowait()
+                        if frame_rgb is not None:
+                            jpeg = await loop.run_in_executor(None, _rgb_to_jpeg, frame_rgb)
+                            frame_count += 1
+                            yield avatar_pb2.RenderOutput(
+                                session_id=session_id,
+                                turn_id=turn_id,
+                                generation=generation,
+                                presentation_timestamp_ms=ts_ms + frame_count * 40,
+                                encoded_frame=jpeg,
+                                keyframe=(frame_count == 1),
+                            )
 
-                    jpeg = await loop.run_in_executor(None, _rgb_to_jpeg, frame_rgb)
-                    frame_count += 1
-                    yield avatar_pb2.RenderOutput(
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        generation=generation,
-                        presentation_timestamp_ms=ts_ms + frame_count * 40,
-                        encoded_frame=jpeg,
-                        keyframe=(frame_count == 1),
-                    )
+                pcm_leftover = combined[i:]
 
-        except Exception:
-            log.exception("Inference failed")
-        finally:
+    async def _drain_frames(self, session_id, turn_id, generation, ts_ms, frame_offset, loop):
+        """Drain remaining frames after IDLE with timeout."""
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
             try:
-                self._sdk.close()
-            except Exception:
-                pass
-            log.info("Inference done: %d frames in %.2fs", frame_count, time.time() - t0)
+                frame_rgb = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: self._sdk.frame_queue.get(timeout=0.5)),
+                    timeout=1.0,
+                )
+            except (asyncio.TimeoutError, queue.Empty):
+                break
+            if frame_rgb is None:
+                break
+            jpeg = await loop.run_in_executor(None, _rgb_to_jpeg, frame_rgb)
+            frame_offset += 1
+            yield avatar_pb2.RenderOutput(
+                session_id=session_id,
+                turn_id=turn_id,
+                generation=generation,
+                presentation_timestamp_ms=ts_ms + frame_offset * 40,
+                encoded_frame=jpeg,
+                keyframe=False,
+            )
 
     async def CloseSession(self, request, context):
         log.info("CloseSession %s", request.session_id)
+        try:
+            self._sdk.close()
+        except Exception:
+            pass
         return avatar_pb2.CloseSessionResponse(ok=True)
 
 
