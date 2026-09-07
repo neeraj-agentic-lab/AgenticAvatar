@@ -161,7 +161,8 @@ export function useAvatarSession(): AvatarSessionHook {
     vad.onSpeechStart = () => {
       if (!micEnabledRef.current) return;
       generationRef.current += 1;
-      console.debug("[vad] speech.started generation:", generationRef.current);
+      console.debug("[vad] speech.started generation:", generationRef.current,
+        "ws state:", wsRef.current?.readyState, "ws open?", wsRef.current?.readyState === WebSocket.OPEN);
       sendWS({
         type: "speech.started",
         session_id: sessionRef.current?.session_id,
