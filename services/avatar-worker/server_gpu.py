@@ -33,8 +33,10 @@ log = logging.getLogger(__name__)
 CHECKPOINTS  = os.getenv("DITTO_CHECKPOINTS", "/models/ditto/checkpoints/ditto_trt_T4")
 CFG_PKL      = os.getenv("DITTO_CFG",         "/models/ditto/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_t4_online.pkl")
 SOURCE_IMAGE = os.getenv("AVATAR_SOURCE_IMAGE", "/models/ditto/portrait.jpg")
-SAMPLE_RATE  = 16000
-CHUNK_SAMPLES = SAMPLE_RATE * 2   # 2 seconds per chunk
+SAMPLE_RATE   = 16000
+# Ditto online pipeline requires exactly this chunk size:
+# int(sum(chunksize) * 0.04 * 16000) + 80 where chunksize=(3,5,2) → 6480 samples
+CHUNK_SAMPLES = 6480
 
 
 class RealtimeStreamSDK:
