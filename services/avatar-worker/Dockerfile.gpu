@@ -51,6 +51,9 @@ ENV MOCK_MODE=false
 ENV DITTO_CHECKPOINTS=/models/ditto/checkpoints/ditto_trt_T4
 ENV DITTO_CFG=/models/ditto/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_t4_online.pkl
 ENV AVATAR_SOURCE_IMAGE=/models/ditto/portrait.jpg
+# CUDA lazy loading prevents context deadlock on T4 with TRT 8.6.1
+ENV CUDA_MODULE_LOADING=LAZY
+ENV CUDA_VISIBLE_DEVICES=0
 
 EXPOSE 50051
 # Pre-warm CUDA context before Python starts, then run worker.
@@ -58,4 +61,4 @@ EXPOSE 50051
 # This prevents the deadlock where the first CUDA init in a fresh container
 # spins indefinitely (observed on T4 with TRT 8.6.1 + conda Python 3.10).
 ENTRYPOINT []
-CMD ["sh", "-c", "nvidia-smi -q -d COMPUTE > /dev/null 2>&1; exec python /app/start.py"]
+CMD ["python", "/app/start.py"]
