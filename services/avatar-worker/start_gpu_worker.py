@@ -1,14 +1,26 @@
 """
 GPU avatar worker entry point.
 
-Critical import order to avoid Python import lock + CUDA init deadlock:
-1. Pre-import stream_pipeline_online BEFORE importing server.py
-   (server.py imports grpc which starts background threads that hold import lock)
-2. Load Ditto after all module imports are done
-3. Start gRPC server last
+Uses os.execv to replace the PID 1 process with a new Python process
+that doesn't inherit the NVIDIA runtime's primary CUDA context lock.
+The new process (not PID 1) can initialize TRT engines without deadlock.
 """
-import sys
 import os
+import sys
+
+# If we're PID 1 and haven't re-exec'd yet, spawn a child and wait
+if os.getpid() == 1 and os.environ.get("_WORKER_REEXEC") != "1":
+    import subprocess
+    env = os.environ.copy()
+    env["_WORKER_REEXEC"] = "1"
+    # Run as a non-PID-1 child process
+    proc = subprocess.Popen(
+        [sys.executable] + sys.argv,
+        env=env,
+    )
+    sys.exit(proc.wait())
+
+# We're now running as a non-PID-1 process
 import asyncio
 import logging
 
@@ -18,19 +30,11 @@ log = logging.getLogger(__name__)
 sys.path.insert(0, "/proto_gen")
 sys.path.insert(0, "/ditto")
 
-# Force single GPU device to get clean CUDA context ownership
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-# Step 1: Pre-import Ditto modules BEFORE grpc background threads start
-log.info("Pre-importing Ditto modules...")
-from stream_pipeline_online import StreamSDK as _StreamSDK
-log.info("Ditto modules imported OK")
-
-# Step 2: Now import server (which imports grpc, cv2 etc.)
-import server
-
 if __name__ == "__main__":
-    log.info("Loading Ditto (streaming SDK)...")
+    import server
+    log.info("Loading Ditto...")
     sdk = server._load_ditto()
     log.info("Ditto ready. Starting gRPC server...")
     asyncio.run(server.serve(preloaded_sdk=sdk))
