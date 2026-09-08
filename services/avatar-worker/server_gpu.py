@@ -22,21 +22,17 @@ from pathlib import Path
 import numpy as np
 import cv2
 
-# Disable gRPC's pthread_atfork prefork handler BEFORE importing grpc.
-# Root cause of hang: cuInit() (called by TRT during engine deserialization)
-# calls fork() internally → triggers grpc_prefork() → deadlock waiting for
-# gRPC thread pool that's blocked on the same CUDA init call.
-# Fix documented in gRPC fork_support.md and issues #17986, #31885.
-os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "false")
-os.environ.setdefault("GRPC_POLL_STRATEGY", "poll")
-
-import grpc
-
 sys.path.insert(0, "/proto_gen")
 sys.path.insert(0, "/ditto")
 
-import avatar_pb2
-import avatar_pb2_grpc
+# grpc and avatar_pb2* are imported LAZILY inside serve() after Ditto loads.
+# Root cause of hang: importing grpc registers a pthread_atfork handler.
+# When TRT calls cuInit() → fork() → grpc_prefork() blocks → deadlock.
+# Confirmed fix: import grpc ONLY after StreamSDK.__init__ completes.
+# References: gRPC issues #17986, #31885, fork_support.md
+grpc = None
+avatar_pb2 = None
+avatar_pb2_grpc = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -255,7 +251,7 @@ def _rgb_to_jpeg(rgb: np.ndarray) -> bytes:
 
 # ── gRPC server ───────────────────────────────────────────────────────────────
 
-class AvatarRendererServicer(avatar_pb2_grpc.AvatarRendererServicer):
+class AvatarRendererServicer(object):  # base swapped to grpc servicer at runtime after grpc import
     def __init__(self, preloaded_sdk: "RealtimeStreamSDK | None" = None):
         # Accept a pre-loaded SDK (loaded before asyncio starts) to avoid CUDA deadlock
         self._sdk: RealtimeStreamSDK | None = preloaded_sdk
@@ -422,5 +418,22 @@ async def serve(preloaded_sdk=None):
 if __name__ == "__main__":
     log.info("Pre-loading Ditto before importing gRPC (avoids cuInit→fork→grpc_prefork deadlock)...")
     sdk = _load_ditto()
-    log.info("Ditto pre-loaded. Starting gRPC server...")
+    log.info("Ditto pre-loaded. Now importing gRPC...")
+
+    # Import grpc and protobuf AFTER Ditto loads — critical for deadlock prevention
+    import grpc as _grpc_mod
+    import avatar_pb2 as _pb2_mod
+    import avatar_pb2_grpc as _pb2_grpc_mod
+
+    # Inject into module globals so class/function bodies can reference them
+    import sys as _sys
+    _this = _sys.modules[__name__]
+    _this.grpc = _grpc_mod
+    _this.avatar_pb2 = _pb2_mod
+    _this.avatar_pb2_grpc = _pb2_grpc_mod
+
+    # Fix base class of AvatarRendererServicer now that grpc is available
+    AvatarRendererServicer.__bases__ = (_pb2_grpc_mod.AvatarRendererServicer,)
+
+    log.info("gRPC imported. Starting server...")
     asyncio.run(serve(preloaded_sdk=sdk))
