@@ -62,4 +62,4 @@ EXPOSE 50051
 # This prevents the deadlock where the first CUDA init in a fresh container
 # spins indefinitely (observed on T4 with TRT 8.6.1 + conda Python 3.10).
 ENTRYPOINT []
-CMD ["python", "/app/cuda_init.py"]
+CMD ["python", "/app/start.py"]
