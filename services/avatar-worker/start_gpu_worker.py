@@ -17,10 +17,8 @@ sys.path.insert(0, "/ditto")
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 if __name__ == "__main__":
-    # Step 1: Load Ditto BEFORE anything that touches CUDA (cv2, torch, etc.)
-    # server.py must NOT import cv2 at module level
     import server
-    log.info("Loading Ditto (cv2 not yet imported)...")
+    log.info("Loading Ditto...")
     sdk = server._load_ditto()
     log.info("Ditto ready. Starting gRPC server...")
     asyncio.run(server.serve(preloaded_sdk=sdk))
