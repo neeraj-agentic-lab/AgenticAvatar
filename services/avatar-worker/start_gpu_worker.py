@@ -35,7 +35,17 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
-log.info("Worker child PID=%d starting...", os.getpid())
+log.info("Worker child PID=%d — pre-importing torch to init CUDA before TRT...", os.getpid())
+
+# Pre-import torch to complete PyTorch's CUDA initialization BEFORE TRT loads.
+# tensorrt_utils.py imports torch, and PyTorch + TRT concurrent CUDA init deadlocks.
+# Pre-importing torch here ensures CUDA is fully initialized before TRT needs it.
+import torch
+if torch.cuda.is_available():
+    torch.cuda.init()
+    log.info("PyTorch CUDA initialized: %s", torch.cuda.get_device_name(0))
+else:
+    log.warning("CUDA not available to PyTorch")
 
 if __name__ == "__main__":
     import server
