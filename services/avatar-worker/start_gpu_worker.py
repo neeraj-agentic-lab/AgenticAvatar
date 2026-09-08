@@ -18,8 +18,10 @@ log = logging.getLogger(__name__)
 sys.path.insert(0, "/proto_gen")
 sys.path.insert(0, "/ditto")
 
+# Force single GPU device to get clean CUDA context ownership
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 # Step 1: Pre-import Ditto modules BEFORE grpc background threads start
-# This ensures Python's import lock is not held when grpc initializes
 log.info("Pre-importing Ditto modules...")
 from stream_pipeline_online import StreamSDK as _StreamSDK
 log.info("Ditto modules imported OK")
