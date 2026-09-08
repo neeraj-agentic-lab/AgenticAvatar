@@ -1,32 +1,22 @@
 """
-Minimal GPU worker launcher.
-Imports NOTHING that touches CUDA before spawning the child.
-The child gets a completely clean CUDA context.
+GPU avatar worker entry point.
+Loads Ditto before gRPC to avoid CUDA context conflicts.
+Uses grpcio 1.59.3 which doesn't register pthread_atfork handlers.
 """
-import multiprocessing as mp
 import sys
 import os
+import asyncio
+import logging
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
 
-def run_server():
-    """Child process — completely clean, no inherited CUDA state."""
-    sys.path.insert(0, "/proto_gen")
-    sys.path.insert(0, "/ditto")
-    os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "false")
-
-    import logging
-    import asyncio
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-    # All CUDA-touching imports happen here, in the child, with clean context
-    import server
-    sdk = server._load_ditto()
-    asyncio.run(server.serve(preloaded_sdk=sdk))
-
+sys.path.insert(0, "/proto_gen")
+sys.path.insert(0, "/ditto")
 
 if __name__ == "__main__":
-    # spawn = fresh Python interpreter, no inherited file descriptors or CUDA handles
-    mp.set_start_method("spawn")
-    p = mp.Process(target=run_server, daemon=False)
-    p.start()
-    p.join()
+    import server
+    log.info("Loading Ditto...")
+    sdk = server._load_ditto()
+    log.info("Ditto ready. Starting gRPC server...")
+    asyncio.run(server.serve(preloaded_sdk=sdk))
