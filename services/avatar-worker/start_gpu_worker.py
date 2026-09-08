@@ -35,21 +35,36 @@ if __name__ == "__main__":
     env = os.environ.copy()
     env["_RUN_WORKER"] = "1"
 
-    # Write a minimal worker script that the child executes
+    # Write a minimal worker script that the child executes.
+    # CRITICAL import order: Ditto loads BEFORE cv2/grpc to avoid CUDA context conflict.
     child_script = os.path.join(os.path.dirname(__file__), "_worker_child.py")
-    if not os.path.exists(child_script):
-        with open(child_script, "w") as f:
-            f.write("""
-import sys, os
+    with open(child_script, "w") as f:
+        f.write("""
+import sys, os, asyncio, logging
 sys.path.insert(0, "/proto_gen")
 sys.path.insert(0, "/ditto")
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-import asyncio
-import server
-import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-sdk = server._load_ditto()
-asyncio.run(server.serve(preloaded_sdk=sdk))
+log = logging.getLogger(__name__)
+
+# Step 1: Load Ditto BEFORE importing cv2/grpc (cv2 allocates CUDA context that conflicts with TRT)
+log.info("Step 1: Loading Ditto...")
+from stream_pipeline_online import StreamSDK
+from server import (RealtimeStreamSDK, _load_ditto, CFG_PKL, CHECKPOINTS,
+                    SOURCE_IMAGE, SAMPLE_RATE, CHUNK_SAMPLES,
+                    LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
+                    WIDTH, HEIGHT, LiveKitRoomPublisher, serve,
+                    AvatarRendererServicer)
+sdk = _load_ditto()
+log.info("Step 2: Ditto loaded. Now importing cv2/grpc...")
+
+# Step 2: Import cv2 and grpc AFTER Ditto is fully loaded
+import cv2  # noqa: triggers CUDA init — must happen AFTER TRT engines load
+import grpc
+import avatar_pb2_grpc
+
+log.info("Step 3: Starting gRPC server...")
+asyncio.run(serve(preloaded_sdk=sdk))
 """)
 
     proc = subprocess.Popen(

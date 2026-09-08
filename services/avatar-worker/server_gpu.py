@@ -20,14 +20,20 @@ from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
-import cv2
-import grpc
+# cv2 and grpc imported AFTER Ditto loads (see start_gpu_worker.py _worker_child.py)
+# cv2 with CUDA support allocates a CUDA context that conflicts with TRT engine loading
 
 sys.path.insert(0, "/proto_gen")
 sys.path.insert(0, "/ditto")
 
-import avatar_pb2
-import avatar_pb2_grpc
+try:
+    import grpc
+    import avatar_pb2
+    import avatar_pb2_grpc
+except ImportError:
+    grpc = None
+    avatar_pb2 = None
+    avatar_pb2_grpc = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
