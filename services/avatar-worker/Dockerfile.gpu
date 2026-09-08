@@ -1,40 +1,55 @@
-FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel
+FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
-WORKDIR /app
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
 
-# System deps
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    git git-lfs ffmpeg \
-    libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev \
+    wget \
+    git \
+    git-lfs \
+    ffmpeg \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps — pinned to exact working versions
+# Install Miniconda (matches Ditto's conda environment)
+RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p /opt/conda && \
+    rm /tmp/miniconda.sh
+
+ENV PATH=/opt/conda/bin:$PATH
+
+# Copy Ditto's exact environment.yaml
+# This is the tested, working combination: PyTorch 2.5.1 + cuDNN 9.1 + TRT 8.6.1
+COPY services/avatar-worker/ditto_environment.yaml /tmp/ditto_environment.yaml
+
+# Create the ditto conda environment from the exact environment.yaml
+# This replicates Ditto's own tested setup
+RUN conda env create -f /tmp/ditto_environment.yaml && \
+    conda clean -afy
+
+# Set ditto conda env as default Python
+ENV PATH=/opt/conda/envs/ditto/bin:$PATH
+ENV CONDA_DEFAULT_ENV=ditto
+
+# Add our extra packages (grpcio, livekit) to the ditto env
 RUN pip install --no-cache-dir \
-    "numpy>=2,<3" \
-    tensorrt==8.6.1 \
-    cuda-python==12.1.0 \
-    librosa \
-    opencv-python-headless \
-    imageio imageio-ffmpeg \
-    scikit-image \
-    cython \
-    colored tqdm filetype \
-    onnxruntime-gpu \
+    grpcio==1.67.0 \
+    grpcio-tools==1.67.0 \
     livekit \
     livekit-api \
-    grpcio==1.59.3 grpcio-tools==1.59.3 \
-    "protobuf>=3.20,<5"
+    onnxruntime-gpu
 
-# Clone Ditto and apply patches
+# Clone Ditto repo
 RUN git clone https://github.com/antgroup/ditto-talkinghead.git /ditto && \
-    # Fix numpy 1.x vs 2.x atan2 API difference
-    sed -i 's/np\.atan2/np.arctan2/g' /ditto/core/aux_models/mediapipe_landmark478.py && \
-    # Pre-compile Cython blend module so startup is fast
-    cd /ditto && python -c "import pyximport; pyximport.install(); from core.utils.blend import blend_images_cy" && \
-    echo "Cython blend module compiled"
+    sed -i 's/np\.atan2/np.arctan2/g' /ditto/core/aux_models/mediapipe_landmark478.py
 
-# Generate gRPC stubs
+# Generate gRPC stubs using ditto env's Python
 COPY packages/contracts/avatar.proto /tmp/avatar.proto
 RUN mkdir -p /proto_gen && python -m grpc_tools.protoc \
     -I /tmp \
@@ -45,21 +60,15 @@ RUN mkdir -p /proto_gen && python -m grpc_tools.protoc \
 # Copy GPU server and launcher
 COPY services/avatar-worker/server_gpu.py /app/server.py
 COPY services/avatar-worker/start_gpu_worker.py /app/start.py
-COPY services/avatar-worker/cuda_init.py /app/cuda_init.py
 
 ENV PYTHONPATH="/proto_gen:/ditto:${PYTHONPATH}"
 ENV MOCK_MODE=false
 ENV DITTO_CHECKPOINTS=/models/ditto/checkpoints/ditto_trt_T4
 ENV DITTO_CFG=/models/ditto/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_t4.pkl
 ENV AVATAR_SOURCE_IMAGE=/models/ditto/portrait.jpg
-# CUDA lazy loading prevents context deadlock on T4 with TRT 8.6.1
-ENV CUDA_MODULE_LOADING=LAZY
 ENV CUDA_VISIBLE_DEVICES=0
+# TRT 8.6.1 library paths for the ditto conda env
+ENV LD_LIBRARY_PATH=/opt/conda/envs/ditto/lib/python3.10/site-packages/tensorrt_libs:${LD_LIBRARY_PATH}
 
 EXPOSE 50051
-# Pre-warm CUDA context before Python starts, then run worker.
-# nvidia-smi initializes the CUDA driver without holding locks that TRT needs.
-# This prevents the deadlock where the first CUDA init in a fresh container
-# spins indefinitely (observed on T4 with TRT 8.6.1 + conda Python 3.10).
-ENTRYPOINT []
 CMD ["python", "/app/start.py"]

@@ -61,7 +61,6 @@ services:
   # GPU avatar worker — Ditto real lip sync (GCP T4 only)
   # Models are at /models/ditto on the GCP VM (not inside the repo)
   avatar-worker-gpu:
-    init: true  # Use tini as PID 1 — prevents CUDA context deadlock on T4
     build:
       context: .
       dockerfile: services/avatar-worker/Dockerfile.gpu
