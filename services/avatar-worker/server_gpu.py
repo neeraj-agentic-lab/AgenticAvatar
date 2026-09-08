@@ -170,10 +170,14 @@ def _jpeg_to_rgba(jpeg_bytes: bytes) -> bytes:
 
 class RealtimeStreamSDK:
     def __init__(self, cfg_pkl: str, data_root: str):
+        log.info("RealtimeStreamSDK: importing StreamSDK...")
         from stream_pipeline_online import StreamSDK
+        log.info("RealtimeStreamSDK: calling StreamSDK().__init__...")
         self._sdk = StreamSDK(cfg_pkl, data_root)
+        log.info("RealtimeStreamSDK: StreamSDK.__init__ done")
         self._frame_queue: queue.Queue = queue.Queue(maxsize=500)
         self._setup_done = False
+        log.info("RealtimeStreamSDK: __init__ complete")
 
     def setup(self, source_path: str, output_path: str):
         log.info("RealtimeStreamSDK.setup() portrait=%s", source_path)
