@@ -1,39 +1,39 @@
 """
-CUDA context keeper.
-Stays alive as a background process holding an active CUDA context.
-This allows the Python worker process to find an existing context
-instead of trying to create the first one (which deadlocks on T4+TRT8.6.1).
+CUDA context initializer + worker launcher.
+This process:
+1. Initializes CUDA (creates primary context)
+2. Launches the Python worker as a subprocess (inherits initialized CUDA)
+3. Waits for the worker to complete
 """
 import sys
+import os
+import subprocess
+import ctypes
 import time
-import signal
 
-def _handle_signal(signum, frame):
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, _handle_signal)
-signal.signal(signal.SIGINT, _handle_signal)
-
-try:
-    import ctypes
-    libcudart = ctypes.CDLL("libcudart.so")
-    # Initialize CUDA runtime and create primary context
-    ret = libcudart.cudaFree(0)
-    if ret != 0:
-        print(f"cudaFree failed: {ret}", file=sys.stderr)
-        sys.exit(1)
-
-    # Get device count
-    count = ctypes.c_int(0)
-    libcudart.cudaGetDeviceCount(ctypes.byref(count))
-    print(f"CUDA context keeper ready: {count.value} GPU(s)", flush=True)
-
-    # Stay alive — keep the CUDA context active
-    while True:
-        time.sleep(10)
-        # Periodically touch CUDA to keep context warm
-        libcudart.cudaFree(0)
-
-except Exception as e:
-    print(f"cuda_init error: {e}", file=sys.stderr)
+# Step 1: Initialize CUDA runtime in THIS process
+libcudart = ctypes.CDLL("libcudart.so")
+ret = libcudart.cudaFree(0)
+if ret != 0:
+    print(f"cudaFree failed: {ret}", file=sys.stderr)
     sys.exit(1)
+
+count = ctypes.c_int(0)
+libcudart.cudaGetDeviceCount(ctypes.byref(count))
+print(f"CUDA initialized in parent: {count.value} GPU(s)", flush=True)
+
+# Step 2: Small delay to let CUDA fully settle
+time.sleep(1)
+
+# Step 3: Launch Python worker — inherits our initialized CUDA context
+worker_env = os.environ.copy()
+proc = subprocess.Popen(
+    [sys.executable, "/app/start.py"],
+    env=worker_env,
+)
+
+# Step 4: Keep this process alive (parent of worker) and wait
+print(f"Worker launched (PID {proc.pid})", flush=True)
+ret = proc.wait()
+print(f"Worker exited: {ret}", flush=True)
+sys.exit(ret)
