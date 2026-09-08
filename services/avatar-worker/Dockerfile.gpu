@@ -4,14 +4,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # System dependencies + Python 3.10
 RUN apt-get update && apt-get install -y \
-    wget git git-lfs ffmpeg \
+    wget curl git git-lfs ffmpeg \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev \
     build-essential python3.10 python3.10-dev python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 RUN ln -sf /usr/bin/python3.10 /usr/bin/python3 && \
     ln -sf /usr/bin/python3.10 /usr/bin/python && \
-    python -m pip install --upgrade pip
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10 && \
+    pip install --upgrade pip
 
 # Install PyTorch 2.5.1 + CUDA 12.1 (Ditto's tested combination)
 # Using official PyTorch wheel index for exact version
