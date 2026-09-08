@@ -20,7 +20,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
-import cv2
+# cv2 imported lazily — initializes CUDA on import which conflicts with TRT engine loading
 
 sys.path.insert(0, "/proto_gen")
 sys.path.insert(0, "/ditto")
@@ -161,12 +161,13 @@ class LiveKitRoomPublisher:
 
 
 def _jpeg_to_rgba(jpeg_bytes: bytes) -> bytes:
+    import cv2 as _cv2
     arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
-    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    bgr = _cv2.imdecode(arr, _cv2.IMREAD_COLOR)
     if bgr is None:
         return bytes(WIDTH * HEIGHT * 4)
-    bgr = cv2.resize(bgr, (WIDTH, HEIGHT))
-    rgba = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGBA)
+    bgr = _cv2.resize(bgr, (WIDTH, HEIGHT))
+    rgba = _cv2.cvtColor(bgr, _cv2.COLOR_BGR2RGBA)
     return rgba.tobytes()
 
 
@@ -244,8 +245,9 @@ def _load_ditto():
 
 
 def _rgb_to_jpeg(rgb: np.ndarray) -> bytes:
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    _, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    import cv2 as _cv2
+    bgr = _cv2.cvtColor(rgb, _cv2.COLOR_RGB2BGR)
+    _, buf = _cv2.imencode(".jpg", bgr, [_cv2.IMWRITE_JPEG_QUALITY, 85])
     return buf.tobytes()
 
 

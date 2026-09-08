@@ -1,40 +1,31 @@
 """
-GPU avatar worker launcher.
-
-Uses multiprocessing.spawn to start server.py in a child process.
-This avoids the NVIDIA container runtime CUDA lock deadlock:
-- Parent process: NVIDIA runtime holds CUDA context lock
-- Child (spawned): clean CUDA context, TRT engines load in ~8s
+Minimal GPU worker launcher.
+Imports NOTHING that touches CUDA before spawning the child.
+The child gets a completely clean CUDA context.
 """
 import multiprocessing as mp
 import sys
 import os
 
+
 def run_server():
-    """Entry point for the spawned child process."""
-    # Fresh Python interpreter — no NVIDIA runtime lock inherited
+    """Child process — completely clean, no inherited CUDA state."""
     sys.path.insert(0, "/proto_gen")
     sys.path.insert(0, "/ditto")
     os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "false")
 
-    # Import and run server.py's main logic
-    import asyncio
     import logging
+    import asyncio
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    log = logging.getLogger("worker")
 
-    log.info("Child process started (clean CUDA context)")
-    log.info("Loading Ditto online pipeline...")
-
+    # All CUDA-touching imports happen here, in the child, with clean context
     import server
     sdk = server._load_ditto()
-
-    log.info("Ditto ready. Starting gRPC server...")
     asyncio.run(server.serve(preloaded_sdk=sdk))
 
 
 if __name__ == "__main__":
-    # Must use spawn — fork inherits the CUDA lock from the NVIDIA runtime
+    # spawn = fresh Python interpreter, no inherited file descriptors or CUDA handles
     mp.set_start_method("spawn")
     p = mp.Process(target=run_server, daemon=False)
     p.start()
