@@ -42,8 +42,9 @@ RUN mkdir -p /proto_gen && python -m grpc_tools.protoc \
     --grpc_python_out=/proto_gen \
     /tmp/avatar.proto
 
-# Copy GPU server
+# Copy GPU server and launcher
 COPY services/avatar-worker/server_gpu.py /app/server.py
+COPY services/avatar-worker/start_gpu_worker.py /app/start.py
 
 ENV PYTHONPATH="/proto_gen:/ditto:${PYTHONPATH}"
 ENV MOCK_MODE=false
@@ -52,4 +53,5 @@ ENV DITTO_CFG=/models/ditto/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_t4_online.
 ENV AVATAR_SOURCE_IMAGE=/models/ditto/portrait.jpg
 
 EXPOSE 50051
-CMD ["python", "/app/server.py"]
+# Use launcher script to spawn server in clean process (avoids NVIDIA runtime CUDA lock)
+CMD ["python", "/app/start.py"]
