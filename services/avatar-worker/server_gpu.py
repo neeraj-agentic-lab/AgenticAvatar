@@ -19,9 +19,18 @@ import time
 from datetime import timedelta
 from pathlib import Path
 
-import cv2
-import grpc
 import numpy as np
+import cv2
+
+# Disable gRPC's pthread_atfork prefork handler BEFORE importing grpc.
+# Root cause of hang: cuInit() (called by TRT during engine deserialization)
+# calls fork() internally → triggers grpc_prefork() → deadlock waiting for
+# gRPC thread pool that's blocked on the same CUDA init call.
+# Fix documented in gRPC fork_support.md and issues #17986, #31885.
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "false")
+os.environ.setdefault("GRPC_POLL_STRATEGY", "poll")
+
+import grpc
 
 sys.path.insert(0, "/proto_gen")
 sys.path.insert(0, "/ditto")
@@ -411,9 +420,7 @@ async def serve(preloaded_sdk=None):
 
 
 if __name__ == "__main__":
-    # Load Ditto BEFORE starting asyncio to avoid CUDA context deadlock
-    # (TRT engine loading in a thread inside an asyncio process can hang)
-    log.info("Pre-loading Ditto before starting asyncio event loop...")
+    log.info("Pre-loading Ditto before importing gRPC (avoids cuInit→fork→grpc_prefork deadlock)...")
     sdk = _load_ditto()
     log.info("Ditto pre-loaded. Starting gRPC server...")
     asyncio.run(serve(preloaded_sdk=sdk))
