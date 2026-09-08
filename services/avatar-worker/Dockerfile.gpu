@@ -45,6 +45,7 @@ RUN mkdir -p /proto_gen && python -m grpc_tools.protoc \
 # Copy GPU server and launcher
 COPY services/avatar-worker/server_gpu.py /app/server.py
 COPY services/avatar-worker/start_gpu_worker.py /app/start.py
+COPY services/avatar-worker/cuda_init.py /app/cuda_init.py
 
 ENV PYTHONPATH="/proto_gen:/ditto:${PYTHONPATH}"
 ENV MOCK_MODE=false
@@ -61,4 +62,6 @@ EXPOSE 50051
 # This prevents the deadlock where the first CUDA init in a fresh container
 # spins indefinitely (observed on T4 with TRT 8.6.1 + conda Python 3.10).
 ENTRYPOINT []
-CMD ["python", "/app/start.py"]
+# cuda_init.py runs cuInit() and exits — "unlocks" the CUDA driver for the next process
+# Then exec (no fork) replaces shell with Python worker
+CMD ["sh", "-c", "python /app/cuda_init.py && exec python /app/start.py"]
