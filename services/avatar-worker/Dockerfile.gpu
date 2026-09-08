@@ -53,7 +53,9 @@ ENV DITTO_CFG=/models/ditto/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_t4_online.
 ENV AVATAR_SOURCE_IMAGE=/models/ditto/portrait.jpg
 
 EXPOSE 50051
-# Bypass nvidia_entrypoint.sh — it initializes CUDA before Python starts,
-# causing a context deadlock when TRT tries to re-initialize CUDA.
+# Pre-warm CUDA context before Python starts, then run worker.
+# nvidia-smi initializes the CUDA driver without holding locks that TRT needs.
+# This prevents the deadlock where the first CUDA init in a fresh container
+# spins indefinitely (observed on T4 with TRT 8.6.1 + conda Python 3.10).
 ENTRYPOINT []
-CMD ["python", "/app/start.py"]
+CMD ["sh", "-c", "nvidia-smi -q -d COMPUTE > /dev/null 2>&1; exec python /app/start.py"]
