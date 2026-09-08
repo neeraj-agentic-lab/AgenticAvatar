@@ -34,6 +34,9 @@ if __name__ == "__main__":
     # The child gets its own CUDA context without conflict from parent
     env = os.environ.copy()
     env["_RUN_WORKER"] = "1"
+    # Clear LD_PRELOAD so NVIDIA container toolkit preload doesn't
+    # re-initialize CUDA in the child (conflicts with parent's CUDA state)
+    env.pop("LD_PRELOAD", None)
 
     # Write a minimal worker script that the child executes.
     # CRITICAL import order: Ditto loads BEFORE cv2/grpc to avoid CUDA context conflict.
