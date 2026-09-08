@@ -2,7 +2,7 @@ FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# System dependencies
+# System dependencies + Python 3.10
 RUN apt-get update && apt-get install -y \
     wget git git-lfs ffmpeg \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev \
@@ -11,34 +11,22 @@ RUN apt-get update && apt-get install -y \
 
 RUN ln -sf /usr/bin/python3.10 /usr/bin/python3 && \
     ln -sf /usr/bin/python3.10 /usr/bin/python && \
-    ln -sf /usr/bin/pip3 /usr/bin/pip
+    python -m pip install --upgrade pip
 
-# Install Miniconda
-RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/mc.sh && \
-    bash /tmp/mc.sh -b -p /opt/conda && rm /tmp/mc.sh
-ENV PATH=/opt/conda/bin:$PATH
+# Install PyTorch 2.5.1 + CUDA 12.1 (Ditto's tested combination)
+# Using official PyTorch wheel index for exact version
+RUN pip install --no-cache-dir \
+    torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+    --index-url https://download.pytorch.org/whl/cu121
 
-# Create conda env with just the critical packages from conda channels
-# (PyTorch 2.5.1 + CUDA 12.1 + cuDNN 9.1 — Ditto's exact tested combination)
-RUN conda create -n ditto python=3.10 -y && \
-    conda install -n ditto -y -c pytorch -c nvidia \
-      pytorch=2.5.1 torchvision=0.20.1 torchaudio=2.5.1 \
-      pytorch-cuda=12.1 \
-      cudnn=9.1 \
-    && conda clean -afy
+# Verify PyTorch version
+RUN python -c "import torch; print('PyTorch:', torch.__version__, '| CUDA:', torch.version.cuda)"
 
-# Activate ditto env by putting it first in PATH and symlinking
-ENV PATH=/opt/conda/envs/ditto/bin:/opt/conda/bin:$PATH
-ENV CONDA_DEFAULT_ENV=ditto
-# Ensure the ditto env Python is used exclusively
-RUN ln -sf /opt/conda/envs/ditto/bin/python /usr/local/bin/python && \
-    ln -sf /opt/conda/envs/ditto/bin/python /usr/local/bin/python3
-
-# Install remaining pip dependencies matching Ditto's environment.yaml
+# Install TRT and Ditto dependencies (matching environment.yaml)
 RUN pip install --no-cache-dir \
     numpy==2.0.1 \
     tensorrt==8.6.1 tensorrt-bindings==8.6.1 tensorrt-libs==8.6.1 \
-    cuda-python==12.1.0 \
+    "cuda-python==12.1.0" \
     librosa==0.10.2.post1 \
     opencv-python-headless==4.10.0.84 \
     imageio==2.36.1 imageio-ffmpeg==0.5.1 \
@@ -51,10 +39,9 @@ RUN pip install --no-cache-dir \
     grpcio==1.67.0 grpcio-tools==1.67.0 \
     "protobuf>=3.20,<5"
 
-# Clone Ditto
+# Clone Ditto and patch numpy atan2 API change
 RUN git clone https://github.com/antgroup/ditto-talkinghead.git /ditto && \
-    sed -i 's/np\.atan2/np.arctan2/g' /ditto/core/aux_models/mediapipe_landmark478.py && \
-    cd /ditto && python -c "import pyximport; pyximport.install(); from core.utils.blend import blend_images_cy" 2>/dev/null || true
+    sed -i 's/np\.atan2/np.arctan2/g' /ditto/core/aux_models/mediapipe_landmark478.py
 
 # Generate gRPC stubs
 COPY packages/contracts/avatar.proto /tmp/avatar.proto
