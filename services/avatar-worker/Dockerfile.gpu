@@ -62,6 +62,6 @@ EXPOSE 50051
 # This prevents the deadlock where the first CUDA init in a fresh container
 # spins indefinitely (observed on T4 with TRT 8.6.1 + conda Python 3.10).
 ENTRYPOINT []
-# cuda_init.py runs cuInit() and exits — "unlocks" the CUDA driver for the next process
-# Then exec (no fork) replaces shell with Python worker
-CMD ["sh", "-c", "python /app/cuda_init.py && exec python /app/start.py"]
+# Run cuda_init in background (stays alive holding CUDA context),
+# then run Python worker which connects to existing CUDA context
+CMD ["sh", "-c", "python /app/cuda_init.py &\nsleep 2\nexec python /app/start.py"]
