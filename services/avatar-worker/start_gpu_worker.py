@@ -1,32 +1,41 @@
 """
 GPU avatar worker entry point.
 
-Uses os.execv to replace itself with a fresh Python process for TRT loading.
-The fresh process (re-exec'd) doesn't have the Python import lock state that
-causes TRT to deadlock in subprocess/fork contexts.
+Uses fork+exec to create a child process with a NEW PID for TRT loading.
+TRT engine locks are tracked per-PID at the kernel level.
+docker exec works because it uses a fresh PID — this replicates that.
+
+CRITICAL: Must fork() BEFORE importing ANYTHING that touches Python's import
+machinery, so the child doesn't inherit import locks.
 """
 import sys
 import os
+
+# Fork IMMEDIATELY — before any Python imports that could hold import locks
+# Child gets a new PID, which is what TRT needs
+if os.environ.get("_AVATAR_WORKER_CHILD") != "1":
+    pid = os.fork()
+    if pid == 0:
+        # Child process — new PID, fresh TRT context
+        os.environ["_AVATAR_WORKER_CHILD"] = "1"
+        # exec to get a completely clean Python state
+        os.execve(sys.executable, [sys.executable] + sys.argv, os.environ)
+    else:
+        # Parent — wait for child
+        _, status = os.waitpid(pid, 0)
+        sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+
+# We are in the child process with a new PID
 import asyncio
 import logging
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger(__name__)
-
-# Check if we've already re-exec'd
-if os.environ.get("_AVATAR_WORKER_EXEC") != "1":
-    # Re-exec ourselves as a fresh Python process
-    # This avoids the Python import lock + TRT deadlock
-    log.info("Re-execing for fresh Python interpreter...")
-    env = os.environ.copy()
-    env["_AVATAR_WORKER_EXEC"] = "1"
-    os.execve(sys.executable, [sys.executable] + sys.argv, env)
-    # Never reaches here
-
-# We are now in the re-exec'd process
 sys.path.insert(0, "/proto_gen")
 sys.path.insert(0, "/ditto")
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
+log.info("Worker child PID=%d starting...", os.getpid())
 
 if __name__ == "__main__":
     import server
