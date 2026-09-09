@@ -12,32 +12,42 @@ RUN apt-get update && apt-get install -y \
 RUN ln -sf /usr/bin/python3.10 /usr/bin/python3 && \
     ln -sf /usr/bin/python3.10 /usr/bin/python && \
     curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10 && \
-    pip install --upgrade pip
+    pip install --upgrade pip setuptools wheel
 
-# Install PyTorch 2.5.1 + CUDA 12.1 (Ditto's tested combination)
-# Using official PyTorch wheel index for exact version
+# PyTorch 2.5.1 + CUDA 12.1 (Ditto's exact tested version)
 RUN pip install --no-cache-dir \
     torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Verify PyTorch version
-RUN python -c "import torch; print('PyTorch:', torch.__version__, '| CUDA:', torch.version.cuda)"
+# Verify PyTorch version matches Ditto's environment
+RUN python -c "import torch; v=torch.__version__; assert v.startswith('2.5'), f'Expected 2.5.x got {v}'; print('PyTorch:', v, '| CUDA:', torch.version.cuda)"
 
-# Install TRT and Ditto dependencies (matching environment.yaml)
+# TRT 8.6.1 (Ditto's exact version)
+RUN pip install --no-cache-dir \
+    tensorrt==8.6.1 \
+    tensorrt-bindings==8.6.1 \
+    tensorrt-libs==8.6.1
+
+# Ditto's other dependencies
 RUN pip install --no-cache-dir \
     numpy==2.0.1 \
-    tensorrt==8.6.1 tensorrt-bindings==8.6.1 tensorrt-libs==8.6.1 \
-    "cuda-python==12.1.0" \
     librosa==0.10.2.post1 \
     opencv-python-headless==4.10.0.84 \
-    imageio==2.36.1 imageio-ffmpeg==0.5.1 \
+    imageio==2.36.1 \
+    imageio-ffmpeg==0.5.1 \
     scikit-image==0.25.0 \
-    scipy==1.15.0 soundfile==0.13.0 \
+    scipy==1.15.0 \
+    soundfile==0.13.0 \
     tqdm colored filetype cython \
-    polygraphy \
+    polygraphy
+
+# gRPC + LiveKit + ONNX
+RUN pip install --no-cache-dir \
     onnxruntime-gpu \
-    livekit livekit-api \
-    grpcio==1.67.0 grpcio-tools==1.67.0 \
+    livekit \
+    livekit-api \
+    grpcio==1.67.0 \
+    grpcio-tools==1.67.0 \
     "protobuf>=3.20,<5"
 
 # Clone Ditto and patch numpy atan2 API change
