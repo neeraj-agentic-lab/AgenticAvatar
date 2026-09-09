@@ -22,11 +22,9 @@ RUN pip install --no-cache-dir \
 # Verify PyTorch version matches Ditto's environment
 RUN python -c "import torch; v=torch.__version__; assert v.startswith('2.5'), f'Expected 2.5.x got {v}'; print('PyTorch:', v, '| CUDA:', torch.version.cuda)"
 
-# TRT 8.6.1 (Ditto's exact version)
-RUN pip install --no-cache-dir \
-    tensorrt==8.6.1 \
-    tensorrt-bindings==8.6.1 \
-    tensorrt-libs==8.6.1
+# TRT 8.6.1 — install just the main package which includes bindings+libs
+# tensorrt-bindings/libs 8.6.1 not on PyPI for Python3.10+ubuntu22; use tensorrt only
+RUN pip install --no-cache-dir tensorrt==8.6.1
 
 # Ditto's other dependencies
 RUN pip install --no-cache-dir \
